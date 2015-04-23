@@ -54,9 +54,11 @@ public interface Channel {
    * invoked.
    *
    * @param methodDescriptor describes the name and parameter types of the operation to call.
+   * @param options the options for this call
+   *
    * @return a {@link Call} bound to the specified method.
    *
    */
   public <RequestT, ResponseT> Call<RequestT, ResponseT> newCall(
-      MethodDescriptor<RequestT, ResponseT> methodDescriptor);
+      MethodDescriptor<RequestT, ResponseT> methodDescriptor, CallOptions options);
 }
