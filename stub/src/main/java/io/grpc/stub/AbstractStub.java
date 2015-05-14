@@ -33,6 +33,7 @@ package io.grpc.stub;
 
 import com.google.common.collect.Maps;
 
+import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientInterceptor;
 import io.grpc.ClientInterceptors;
@@ -56,6 +57,7 @@ public abstract class AbstractStub<S extends AbstractStub<?, ?>,
     C extends AbstractServiceDescriptor<C>> {
   protected final Channel channel;
   protected final C config;
+  protected final CallOptions callOptions = CallOptions.BLANK;
 
   /**
    * Constructor for use by subclasses.
@@ -77,6 +79,10 @@ public abstract class AbstractStub<S extends AbstractStub<?, ?>,
    */
   public StubConfigBuilder configureNewStub() {
     return new StubConfigBuilder();
+  }
+
+  public Configurator reconfigure() {
+    return new Configurator();
   }
 
   /**
@@ -143,6 +149,18 @@ public abstract class AbstractStub<S extends AbstractStub<?, ?>,
     public S build() {
       return AbstractStub.this.build(ClientInterceptors.intercept(stubChannel, interceptors),
           config.build(methodMap));
+    }
+  }
+
+  public class Configurator extends CallOptions.Builder<Configurator> {
+    private Configurator() {
+      super(callOptions);
+    }
+
+    public S done() {
+      // TODO: pass the new CallOptions to the new Stub
+      CallOptions callOptions = build();
+      return AbstractStub.this.build(channel, config);
     }
   }
 }
