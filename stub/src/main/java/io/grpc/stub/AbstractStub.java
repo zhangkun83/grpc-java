@@ -152,7 +152,7 @@ public abstract class AbstractStub<S extends AbstractStub<?, ?>,
     }
   }
 
-  public class Configurator extends CallOptions.Builder<Configurator> {
+  public class Configurator extends CallOptions.AbstractBuilder<Configurator> {
     private Configurator() {
       super(callOptions);
     }

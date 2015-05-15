@@ -25,23 +25,33 @@ public final class CallOptions {
     return new Builder(this);
   }
 
-  public static class Builder<T extends Builder> {
+  public abstract static class AbstractBuilder<T extends AbstractBuilder> {
     private final CallOptions product;
     private boolean built = false;
 
-    protected Builder(CallOptions prototype) {
+    protected AbstractBuilder(CallOptions prototype) {
       this.product = new CallOptions(prototype);
     }
 
-    public T deadline(long deadline) {
+    public final T deadline(long deadline) {
       product.deadline = Optional.of(deadline);
       return (T) this;
     }
 
-    public CallOptions build() {
+    protected final CallOptions build() {
       Preconditions.checkState(!built);
       built = true;
       return product;
+    }
+  }
+
+  public static final class Builder<T extends Builder> extends AbstractBuilder<T> {
+    protected Builder(CallOptions prototype) {
+      super(prototype);
+    }
+
+    public CallOptions done() {
+      return build();
     }
   }
 }
