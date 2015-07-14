@@ -1,12 +1,5 @@
 package io.grpc.examples.helloworld;
 
-import static io.grpc.stub.ClientCalls.asyncUnaryCall;
-import static io.grpc.stub.ClientCalls.asyncServerStreamingCall;
-import static io.grpc.stub.ClientCalls.asyncClientStreamingCall;
-import static io.grpc.stub.ClientCalls.duplexStreamingCall;
-import static io.grpc.stub.ClientCalls.blockingUnaryCall;
-import static io.grpc.stub.ClientCalls.blockingServerStreamingCall;
-import static io.grpc.stub.ClientCalls.unaryFutureCall;
 import static io.grpc.stub.ServerCalls.asyncUnaryRequestCall;
 import static io.grpc.stub.ServerCalls.asyncStreamingRequestCall;
 
@@ -89,7 +82,7 @@ public class GreeterGrpc {
   }
 
   public static class GreeterStub extends
-      io.grpc.stub.AbstractStub<GreeterStub, GreeterServiceDescriptor>
+      io.grpc.stub.AsyncStub<GreeterStub, GreeterServiceDescriptor>
       implements Greeter {
     private GreeterStub(io.grpc.Channel channel,
         GreeterServiceDescriptor config) {
@@ -113,12 +106,12 @@ public class GreeterGrpc {
     public void sayHello(io.grpc.examples.helloworld.HelloRequest request,
         io.grpc.stub.StreamObserver<io.grpc.examples.helloworld.HelloResponse> responseObserver) {
       asyncUnaryCall(
-          channel.newCall(config.sayHello, callOptions), request, responseObserver);
+          config.sayHello, request, responseObserver);
     }
   }
 
   public static class GreeterBlockingStub extends
-      io.grpc.stub.AbstractStub<GreeterBlockingStub, GreeterServiceDescriptor>
+      io.grpc.stub.BlockingStub<GreeterBlockingStub, GreeterServiceDescriptor>
       implements GreeterBlockingClient {
     private GreeterBlockingStub(io.grpc.Channel channel,
         GreeterServiceDescriptor config) {
@@ -141,12 +134,12 @@ public class GreeterGrpc {
     @java.lang.Override
     public io.grpc.examples.helloworld.HelloResponse sayHello(io.grpc.examples.helloworld.HelloRequest request) {
       return blockingUnaryCall(
-          channel.newCall(config.sayHello, callOptions), request);
+          config.sayHello, request);
     }
   }
 
   public static class GreeterFutureStub extends
-      io.grpc.stub.AbstractStub<GreeterFutureStub, GreeterServiceDescriptor>
+      io.grpc.stub.FutureStub<GreeterFutureStub, GreeterServiceDescriptor>
       implements GreeterFutureClient {
     private GreeterFutureStub(io.grpc.Channel channel,
         GreeterServiceDescriptor config) {
@@ -170,7 +163,7 @@ public class GreeterGrpc {
     public com.google.common.util.concurrent.ListenableFuture<io.grpc.examples.helloworld.HelloResponse> sayHello(
         io.grpc.examples.helloworld.HelloRequest request) {
       return unaryFutureCall(
-          channel.newCall(config.sayHello, callOptions), request);
+          config.sayHello, request);
     }
   }
 

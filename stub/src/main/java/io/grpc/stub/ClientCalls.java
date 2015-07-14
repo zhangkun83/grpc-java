@@ -104,16 +104,6 @@ public class ClientCalls {
   }
 
   /**
-   * Executes a unary call with a response {@link StreamObserver}.
-   */
-  public static <ReqT, RespT> void asyncUnaryCall(
-      ClientCall<ReqT, RespT> call,
-      ReqT param,
-      StreamObserver<RespT> observer) {
-    asyncServerStreamingCall(call, param, observer);
-  }
-
-  /**
    * Executes a server-streaming call returning a blocking {@link Iterator} over the
    * response stream.
    * @return an iterator over the response stream.
@@ -129,7 +119,7 @@ public class ClientCalls {
   /**
    * Executes a server-streaming call with a response {@link StreamObserver}.
    */
-  public static <ReqT, RespT> void asyncServerStreamingCall(
+  protected static <ReqT, RespT> void asyncServerStreamingCall(
       ClientCall<ReqT, RespT> call,
       ReqT param,
       StreamObserver<RespT> responseObserver) {
@@ -176,16 +166,6 @@ public class ClientCalls {
       call.cancel();
       throw Throwables.propagate(t);
     }
-  }
-
-  /**
-   * Executes a client-streaming call returning a {@link StreamObserver} for the request messages.
-   * @return request stream observer.
-   */
-  public static <ReqT, RespT> StreamObserver<ReqT> asyncClientStreamingCall(
-      ClientCall<ReqT, RespT> call,
-      StreamObserver<RespT> responseObserver) {
-    return duplexStreamingCall(call, responseObserver);
   }
 
   /**

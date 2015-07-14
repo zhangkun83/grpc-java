@@ -291,14 +291,17 @@ static void PrintStub(const google::protobuf::ServiceDescriptor* service,
     case ASYNC_CLIENT_IMPL:
       call_type = ASYNC_CALL;
       impl = true;
+      (*vars)["stub_base_class"] = "io.grpc.stub.AsyncStub";
       break;
     case BLOCKING_CLIENT_IMPL:
       call_type = BLOCKING_CALL;
       impl = true;
+      (*vars)["stub_base_class"] = "io.grpc.stub.BlockingStub";
       break;
     case FUTURE_CLIENT_IMPL:
       call_type = FUTURE_CALL;
       impl = true;
+      (*vars)["stub_base_class"] = "io.grpc.stub.FutureStub";
       break;
     default:
       FAIL << "Cannot determine call type for StubType: " << type;
@@ -315,7 +318,7 @@ static void PrintStub(const google::protobuf::ServiceDescriptor* service,
     p->Print(
         *vars,
         "public static class $impl_name$ extends\n"
-        "    $AbstractStub$<$impl_name$, $service_name$ServiceDescriptor>\n"
+        "    $stub_base_class$<$impl_name$, $service_name$ServiceDescriptor>\n"
         "    implements $interface_name$ {\n");
   }
   p->Indent();
@@ -444,12 +447,12 @@ static void PrintStub(const google::protobuf::ServiceDescriptor* service,
           p->Print(
               *vars,
               "return $calls_method$(\n"
-              "    channel.newCall(config.$lower_method_name$, callOptions), $params$);\n");
+              "    config.$lower_method_name$, $params$);\n");
           break;
         case ASYNC_CALL:
           if (server_streaming) {
             if (client_streaming) {
-              (*vars)["calls_method"] = "duplexStreamingCall";
+              (*vars)["calls_method"] = "asyncDuplexStreamingCall";
               (*vars)["params"] = "responseObserver";
             } else {
               (*vars)["calls_method"] = "asyncServerStreamingCall";
@@ -468,7 +471,7 @@ static void PrintStub(const google::protobuf::ServiceDescriptor* service,
           p->Print(
               *vars,
               "$last_line_prefix$$calls_method$(\n"
-              "    channel.newCall(config.$lower_method_name$, callOptions), $params$);\n");
+              "    config.$lower_method_name$, $params$);\n");
           break;
         case FUTURE_CALL:
           CHECK(!client_streaming && !server_streaming)
@@ -479,7 +482,7 @@ static void PrintStub(const google::protobuf::ServiceDescriptor* service,
           p->Print(
               *vars,
               "return $calls_method$(\n"
-              "    channel.newCall(config.$lower_method_name$, callOptions), request);\n");
+              "    config.$lower_method_name$, request);\n");
           break;
       }
       p->Outdent();
@@ -633,20 +636,6 @@ static void PrintService(const ServiceDescriptor* service,
 void PrintImports(Printer* p, bool generate_nano) {
   p->Print(
       "import static "
-      "io.grpc.stub.ClientCalls.asyncUnaryCall;\n"
-      "import static "
-      "io.grpc.stub.ClientCalls.asyncServerStreamingCall;\n"
-      "import static "
-      "io.grpc.stub.ClientCalls.asyncClientStreamingCall;\n"
-      "import static "
-      "io.grpc.stub.ClientCalls.duplexStreamingCall;\n"
-      "import static "
-      "io.grpc.stub.ClientCalls.blockingUnaryCall;\n"
-      "import static "
-      "io.grpc.stub.ClientCalls.blockingServerStreamingCall;\n"
-      "import static "
-      "io.grpc.stub.ClientCalls.unaryFutureCall;\n"
-      "import static "
       "io.grpc.stub.ServerCalls.asyncUnaryRequestCall;\n"
       "import static "
       "io.grpc.stub.ServerCalls.asyncStreamingRequestCall;\n\n");
@@ -670,7 +659,6 @@ void GenerateService(const ServiceDescriptor* service,
       "io.grpc.ServerMethodDefinition";
   vars["ServerServiceDefinition"] =
       "io.grpc.ServerServiceDefinition";
-  vars["AbstractStub"] = "io.grpc.stub.AbstractStub";
   vars["AbstractServiceDescriptor"] =
       "io.grpc.stub.AbstractServiceDescriptor";
   vars["ImmutableList"] = "com.google.common.collect.ImmutableList";

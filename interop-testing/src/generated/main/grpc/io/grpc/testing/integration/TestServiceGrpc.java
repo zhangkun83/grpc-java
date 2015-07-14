@@ -1,12 +1,5 @@
 package io.grpc.testing.integration;
 
-import static io.grpc.stub.ClientCalls.asyncUnaryCall;
-import static io.grpc.stub.ClientCalls.asyncServerStreamingCall;
-import static io.grpc.stub.ClientCalls.asyncClientStreamingCall;
-import static io.grpc.stub.ClientCalls.duplexStreamingCall;
-import static io.grpc.stub.ClientCalls.blockingUnaryCall;
-import static io.grpc.stub.ClientCalls.blockingServerStreamingCall;
-import static io.grpc.stub.ClientCalls.unaryFutureCall;
 import static io.grpc.stub.ServerCalls.asyncUnaryRequestCall;
 import static io.grpc.stub.ServerCalls.asyncStreamingRequestCall;
 
@@ -187,7 +180,7 @@ public class TestServiceGrpc {
   }
 
   public static class TestServiceStub extends
-      io.grpc.stub.AbstractStub<TestServiceStub, TestServiceServiceDescriptor>
+      io.grpc.stub.AsyncStub<TestServiceStub, TestServiceServiceDescriptor>
       implements TestService {
     private TestServiceStub(io.grpc.Channel channel,
         TestServiceServiceDescriptor config) {
@@ -211,47 +204,47 @@ public class TestServiceGrpc {
     public void emptyCall(com.google.protobuf.EmptyProtos.Empty request,
         io.grpc.stub.StreamObserver<com.google.protobuf.EmptyProtos.Empty> responseObserver) {
       asyncUnaryCall(
-          channel.newCall(config.emptyCall, callOptions), request, responseObserver);
+          config.emptyCall, request, responseObserver);
     }
 
     @java.lang.Override
     public void unaryCall(io.grpc.testing.integration.Messages.SimpleRequest request,
         io.grpc.stub.StreamObserver<io.grpc.testing.integration.Messages.SimpleResponse> responseObserver) {
       asyncUnaryCall(
-          channel.newCall(config.unaryCall, callOptions), request, responseObserver);
+          config.unaryCall, request, responseObserver);
     }
 
     @java.lang.Override
     public void streamingOutputCall(io.grpc.testing.integration.Messages.StreamingOutputCallRequest request,
         io.grpc.stub.StreamObserver<io.grpc.testing.integration.Messages.StreamingOutputCallResponse> responseObserver) {
       asyncServerStreamingCall(
-          channel.newCall(config.streamingOutputCall, callOptions), request, responseObserver);
+          config.streamingOutputCall, request, responseObserver);
     }
 
     @java.lang.Override
     public io.grpc.stub.StreamObserver<io.grpc.testing.integration.Messages.StreamingInputCallRequest> streamingInputCall(
         io.grpc.stub.StreamObserver<io.grpc.testing.integration.Messages.StreamingInputCallResponse> responseObserver) {
       return asyncClientStreamingCall(
-          channel.newCall(config.streamingInputCall, callOptions), responseObserver);
+          config.streamingInputCall, responseObserver);
     }
 
     @java.lang.Override
     public io.grpc.stub.StreamObserver<io.grpc.testing.integration.Messages.StreamingOutputCallRequest> fullDuplexCall(
         io.grpc.stub.StreamObserver<io.grpc.testing.integration.Messages.StreamingOutputCallResponse> responseObserver) {
-      return duplexStreamingCall(
-          channel.newCall(config.fullDuplexCall, callOptions), responseObserver);
+      return asyncDuplexStreamingCall(
+          config.fullDuplexCall, responseObserver);
     }
 
     @java.lang.Override
     public io.grpc.stub.StreamObserver<io.grpc.testing.integration.Messages.StreamingOutputCallRequest> halfDuplexCall(
         io.grpc.stub.StreamObserver<io.grpc.testing.integration.Messages.StreamingOutputCallResponse> responseObserver) {
-      return duplexStreamingCall(
-          channel.newCall(config.halfDuplexCall, callOptions), responseObserver);
+      return asyncDuplexStreamingCall(
+          config.halfDuplexCall, responseObserver);
     }
   }
 
   public static class TestServiceBlockingStub extends
-      io.grpc.stub.AbstractStub<TestServiceBlockingStub, TestServiceServiceDescriptor>
+      io.grpc.stub.BlockingStub<TestServiceBlockingStub, TestServiceServiceDescriptor>
       implements TestServiceBlockingClient {
     private TestServiceBlockingStub(io.grpc.Channel channel,
         TestServiceServiceDescriptor config) {
@@ -274,25 +267,25 @@ public class TestServiceGrpc {
     @java.lang.Override
     public com.google.protobuf.EmptyProtos.Empty emptyCall(com.google.protobuf.EmptyProtos.Empty request) {
       return blockingUnaryCall(
-          channel.newCall(config.emptyCall, callOptions), request);
+          config.emptyCall, request);
     }
 
     @java.lang.Override
     public io.grpc.testing.integration.Messages.SimpleResponse unaryCall(io.grpc.testing.integration.Messages.SimpleRequest request) {
       return blockingUnaryCall(
-          channel.newCall(config.unaryCall, callOptions), request);
+          config.unaryCall, request);
     }
 
     @java.lang.Override
     public java.util.Iterator<io.grpc.testing.integration.Messages.StreamingOutputCallResponse> streamingOutputCall(
         io.grpc.testing.integration.Messages.StreamingOutputCallRequest request) {
       return blockingServerStreamingCall(
-          channel.newCall(config.streamingOutputCall, callOptions), request);
+          config.streamingOutputCall, request);
     }
   }
 
   public static class TestServiceFutureStub extends
-      io.grpc.stub.AbstractStub<TestServiceFutureStub, TestServiceServiceDescriptor>
+      io.grpc.stub.FutureStub<TestServiceFutureStub, TestServiceServiceDescriptor>
       implements TestServiceFutureClient {
     private TestServiceFutureStub(io.grpc.Channel channel,
         TestServiceServiceDescriptor config) {
@@ -316,14 +309,14 @@ public class TestServiceGrpc {
     public com.google.common.util.concurrent.ListenableFuture<com.google.protobuf.EmptyProtos.Empty> emptyCall(
         com.google.protobuf.EmptyProtos.Empty request) {
       return unaryFutureCall(
-          channel.newCall(config.emptyCall, callOptions), request);
+          config.emptyCall, request);
     }
 
     @java.lang.Override
     public com.google.common.util.concurrent.ListenableFuture<io.grpc.testing.integration.Messages.SimpleResponse> unaryCall(
         io.grpc.testing.integration.Messages.SimpleRequest request) {
       return unaryFutureCall(
-          channel.newCall(config.unaryCall, callOptions), request);
+          config.unaryCall, request);
     }
   }
 

@@ -1,12 +1,5 @@
 package io.grpc.testing;
 
-import static io.grpc.stub.ClientCalls.asyncUnaryCall;
-import static io.grpc.stub.ClientCalls.asyncServerStreamingCall;
-import static io.grpc.stub.ClientCalls.asyncClientStreamingCall;
-import static io.grpc.stub.ClientCalls.duplexStreamingCall;
-import static io.grpc.stub.ClientCalls.blockingUnaryCall;
-import static io.grpc.stub.ClientCalls.blockingServerStreamingCall;
-import static io.grpc.stub.ClientCalls.unaryFutureCall;
 import static io.grpc.stub.ServerCalls.asyncUnaryRequestCall;
 import static io.grpc.stub.ServerCalls.asyncStreamingRequestCall;
 
@@ -102,7 +95,7 @@ public class WorkerGrpc {
   }
 
   public static class WorkerStub extends
-      io.grpc.stub.AbstractStub<WorkerStub, WorkerServiceDescriptor>
+      io.grpc.stub.AsyncStub<WorkerStub, WorkerServiceDescriptor>
       implements Worker {
     private WorkerStub(io.grpc.Channel channel,
         WorkerServiceDescriptor config) {
@@ -125,20 +118,20 @@ public class WorkerGrpc {
     @java.lang.Override
     public io.grpc.stub.StreamObserver<io.grpc.testing.ClientArgs> runTest(
         io.grpc.stub.StreamObserver<io.grpc.testing.ClientStatus> responseObserver) {
-      return duplexStreamingCall(
-          channel.newCall(config.runTest, callOptions), responseObserver);
+      return asyncDuplexStreamingCall(
+          config.runTest, responseObserver);
     }
 
     @java.lang.Override
     public io.grpc.stub.StreamObserver<io.grpc.testing.ServerArgs> runServer(
         io.grpc.stub.StreamObserver<io.grpc.testing.ServerStatus> responseObserver) {
-      return duplexStreamingCall(
-          channel.newCall(config.runServer, callOptions), responseObserver);
+      return asyncDuplexStreamingCall(
+          config.runServer, responseObserver);
     }
   }
 
   public static class WorkerBlockingStub extends
-      io.grpc.stub.AbstractStub<WorkerBlockingStub, WorkerServiceDescriptor>
+      io.grpc.stub.BlockingStub<WorkerBlockingStub, WorkerServiceDescriptor>
       implements WorkerBlockingClient {
     private WorkerBlockingStub(io.grpc.Channel channel,
         WorkerServiceDescriptor config) {
@@ -160,7 +153,7 @@ public class WorkerGrpc {
   }
 
   public static class WorkerFutureStub extends
-      io.grpc.stub.AbstractStub<WorkerFutureStub, WorkerServiceDescriptor>
+      io.grpc.stub.FutureStub<WorkerFutureStub, WorkerServiceDescriptor>
       implements WorkerFutureClient {
     private WorkerFutureStub(io.grpc.Channel channel,
         WorkerServiceDescriptor config) {

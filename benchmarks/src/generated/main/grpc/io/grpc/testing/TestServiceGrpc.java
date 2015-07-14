@@ -1,12 +1,5 @@
 package io.grpc.testing;
 
-import static io.grpc.stub.ClientCalls.asyncUnaryCall;
-import static io.grpc.stub.ClientCalls.asyncServerStreamingCall;
-import static io.grpc.stub.ClientCalls.asyncClientStreamingCall;
-import static io.grpc.stub.ClientCalls.duplexStreamingCall;
-import static io.grpc.stub.ClientCalls.blockingUnaryCall;
-import static io.grpc.stub.ClientCalls.blockingServerStreamingCall;
-import static io.grpc.stub.ClientCalls.unaryFutureCall;
 import static io.grpc.stub.ServerCalls.asyncUnaryRequestCall;
 import static io.grpc.stub.ServerCalls.asyncStreamingRequestCall;
 
@@ -107,7 +100,7 @@ public class TestServiceGrpc {
   }
 
   public static class TestServiceStub extends
-      io.grpc.stub.AbstractStub<TestServiceStub, TestServiceServiceDescriptor>
+      io.grpc.stub.AsyncStub<TestServiceStub, TestServiceServiceDescriptor>
       implements TestService {
     private TestServiceStub(io.grpc.Channel channel,
         TestServiceServiceDescriptor config) {
@@ -131,19 +124,19 @@ public class TestServiceGrpc {
     public void unaryCall(io.grpc.testing.SimpleRequest request,
         io.grpc.stub.StreamObserver<io.grpc.testing.SimpleResponse> responseObserver) {
       asyncUnaryCall(
-          channel.newCall(config.unaryCall, callOptions), request, responseObserver);
+          config.unaryCall, request, responseObserver);
     }
 
     @java.lang.Override
     public io.grpc.stub.StreamObserver<io.grpc.testing.SimpleRequest> streamingCall(
         io.grpc.stub.StreamObserver<io.grpc.testing.SimpleResponse> responseObserver) {
-      return duplexStreamingCall(
-          channel.newCall(config.streamingCall, callOptions), responseObserver);
+      return asyncDuplexStreamingCall(
+          config.streamingCall, responseObserver);
     }
   }
 
   public static class TestServiceBlockingStub extends
-      io.grpc.stub.AbstractStub<TestServiceBlockingStub, TestServiceServiceDescriptor>
+      io.grpc.stub.BlockingStub<TestServiceBlockingStub, TestServiceServiceDescriptor>
       implements TestServiceBlockingClient {
     private TestServiceBlockingStub(io.grpc.Channel channel,
         TestServiceServiceDescriptor config) {
@@ -166,12 +159,12 @@ public class TestServiceGrpc {
     @java.lang.Override
     public io.grpc.testing.SimpleResponse unaryCall(io.grpc.testing.SimpleRequest request) {
       return blockingUnaryCall(
-          channel.newCall(config.unaryCall, callOptions), request);
+          config.unaryCall, request);
     }
   }
 
   public static class TestServiceFutureStub extends
-      io.grpc.stub.AbstractStub<TestServiceFutureStub, TestServiceServiceDescriptor>
+      io.grpc.stub.FutureStub<TestServiceFutureStub, TestServiceServiceDescriptor>
       implements TestServiceFutureClient {
     private TestServiceFutureStub(io.grpc.Channel channel,
         TestServiceServiceDescriptor config) {
@@ -195,7 +188,7 @@ public class TestServiceGrpc {
     public com.google.common.util.concurrent.ListenableFuture<io.grpc.testing.SimpleResponse> unaryCall(
         io.grpc.testing.SimpleRequest request) {
       return unaryFutureCall(
-          channel.newCall(config.unaryCall, callOptions), request);
+          config.unaryCall, request);
     }
   }
 

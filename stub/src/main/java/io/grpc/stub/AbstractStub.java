@@ -31,10 +31,14 @@
 
 package io.grpc.stub;
 
+import com.google.common.base.Throwables;
+
 import io.grpc.CallOptions;
 import io.grpc.Channel;
+import io.grpc.ClientCall;
 import io.grpc.ClientInterceptor;
 import io.grpc.ClientInterceptors;
+import io.grpc.Metadata;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -174,4 +178,26 @@ public abstract class AbstractStub<S extends AbstractStub<?, ?>,
           config, callOptions);
     }
   }
+
+
+  /* Helper methods to make calls. */
+
+  /**
+   * Executes a unary-request call with a {@link io.grpc.ClientCall.Listener}.
+   */
+  protected static <ReqT, RespT> void asyncUnaryRequestCall(
+      ClientCall<ReqT, RespT> call,
+      ReqT param,
+      ClientCall.Listener<RespT> responseListener) {
+    call.start(responseListener, new Metadata.Headers());
+    call.request(1);
+    try {
+      call.sendPayload(param);
+      call.halfClose();
+    } catch (Throwable t) {
+      call.cancel();
+      throw Throwables.propagate(t);
+    }
+  }
+
 }
