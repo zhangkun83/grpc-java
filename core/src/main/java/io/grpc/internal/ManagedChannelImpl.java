@@ -62,6 +62,7 @@ import java.net.SocketAddress;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -355,7 +356,7 @@ public final class ManagedChannelImpl extends ManagedChannel {
 
   private final TransportManager tm = new TransportManager() {
     @Override
-    public void updateRetainedTransports(SocketAddress[] addrs) {
+    public void updateRetainedTransports(Collection<SocketAddress> addrs) {
       // TODO(zhangkun83): warm-up new servers and discard removed servers.
     }
 

@@ -1,0 +1,25 @@
+// gRPC definition for a massage service.
+
+syntax = "proto3";
+
+package loadbalancer_gslb.client.grpc;
+
+option java_multiple_files = true;
+option java_package = "io.grpc.examples.massage";
+option java_outer_classname = "MasssageProto";
+
+// Protocol type definitions
+message MassageRequest {
+  string request = 1;
+};
+
+message MassageReply {
+  string reply = 1;
+};
+
+// Interface exported by the server
+service Massage {
+  // Get a reply from server.
+  rpc GetMassage(MassageRequest) returns (MassageReply) {
+  };
+};
