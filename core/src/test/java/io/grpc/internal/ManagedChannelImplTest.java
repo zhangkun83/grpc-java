@@ -209,7 +209,7 @@ public class ManagedChannelImplTest {
     channel.shutdown();
     assertTrue(channel.isShutdown());
     assertFalse(channel.isTerminated());
-    verify(mockTransport).shutdown();
+    verify(mockTransport, timeout(1000)).shutdown();
 
     // Further calls should fail without going to the transport
     ClientCall<String, Integer> call3 = channel.newCall(method, CallOptions.DEFAULT);

@@ -352,40 +352,77 @@ public final class ManagedChannelImpl extends ManagedChannel {
     transportFactory.release();
   }
 
+  /**
+   * Returns a {@link TransportSet} for the given address, creates it if necessary.
+   *
+   * @param addr the address
+   * @param reconnectionEnabled whether a new {@link TransportSet} will have reconnection enabled by
+   *                            default.
+   */
+  private TransportSet prepareTransportSet(final SocketAddress addr, boolean reconnectionEnabled) {
+    synchronized (lock) {
+      TransportSet ts = transports.get(addr);
+      if (ts == null) {
+        ts = new TransportSet(addr, authority(), loadBalancer, backoffPolicyProvider,
+            transportFactory, scheduledExecutor, reconnectionEnabled, new TransportSet.Callback() {
+              @Override
+              public void onTerminated() {
+                synchronized (lock) {
+                  transports.remove(addr);
+                  if (shutdown && transports.isEmpty()) {
+                    if (terminated) {
+                      log.warning("transportTerminated called after already terminated");
+                    }
+                    terminated = true;
+                    lock.notifyAll();
+                    onChannelTerminated();
+                  }
+                }
+              }
+            });
+        transports.put(addr, ts);
+      }
+      return ts;
+    }
+  }
+
   private final TransportManager tm = new TransportManager() {
     @Override
-    public void updateRetainedTransports(SocketAddress[] addrs) {
-      // TODO(zhangkun83): warm-up new servers and discard removed servers.
+    public void updateRetainedTransports(Map<SocketAddress, TransportManager.Retention> addrs) {
+      synchronized (lock) {
+        for (Map.Entry<SocketAddress, TransportSet> transport : transports.entrySet()) {
+          if (!addrs.containsKey(transport.getKey())) {
+            transport.getValue().shutdown();
+          }
+        }
+        for (Map.Entry<SocketAddress, TransportManager.Retention> addr : addrs.entrySet()) {
+          TransportSet ts = transports.get(addr.getKey());
+          if (addr.getValue() == TransportManager.Retention.ACTIVE) {
+            if (ts != null) {
+              // TODO(zhangkun83): If it returns false, TransportSet has already been shut down. We
+              // may want to schedule a task to try later, but I find it non-trivial. Current
+              // behavior is not optimal, but shouldn't hurt anything.
+              ts.enableReconnection();
+            } else {
+              prepareTransportSet(addr.getKey(), true);
+            }
+          } else {  // PASSIVE
+            if (ts != null) {
+              ts.disableReconnection();
+            }
+          }
+        }
+      }
     }
 
     @Override
-    public ListenableFuture<ClientTransport> getTransport(final SocketAddress addr) {
+    public ListenableFuture<ClientTransport> getTransport(SocketAddress addr) {
       TransportSet ts;
       synchronized (lock) {
         if (shutdown) {
           return NULL_VALUE_TRANSPORT_FUTURE;
         }
-        ts = transports.get(addr);
-        if (ts == null) {
-          ts = new TransportSet(addr, authority(), loadBalancer, backoffPolicyProvider,
-              transportFactory, scheduledExecutor, new TransportSet.Callback() {
-                @Override
-                public void onTerminated() {
-                  synchronized (lock) {
-                    transports.remove(addr);
-                    if (shutdown && transports.isEmpty()) {
-                      if (terminated) {
-                        log.warning("transportTerminated called after already terminated");
-                      }
-                      terminated = true;
-                      lock.notifyAll();
-                      onChannelTerminated();
-                    }
-                  }
-                }
-              });
-          transports.put(addr, ts);
-        }
+        ts = prepareTransportSet(addr, false);
       }
       return ts.obtainActiveTransport();
     }

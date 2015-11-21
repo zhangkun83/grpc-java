@@ -40,7 +40,9 @@ import io.grpc.internal.ClientTransport;
 
 import java.net.SocketAddress;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
@@ -119,6 +121,7 @@ public final class SimpleLoadBalancerFactory extends LoadBalancer.Factory {
         }
         currentServer = servers.get(currentServerIndex);
       }
+      updateRetainedTransports();
       pendingPicksFulfillmentBatch.link(new Supplier<ListenableFuture<ClientTransport>>() {
         @Override public ListenableFuture<ClientTransport> get() {
           return tm.getTransport(currentServer.getAddress());
@@ -151,7 +154,21 @@ public final class SimpleLoadBalancerFactory extends LoadBalancer.Factory {
             }
           }
         }
+        updateRetainedTransports();
       }
+    }
+
+    private void updateRetainedTransports() {
+      Map<SocketAddress, TransportManager.Retention> newSet;
+      synchronized (servers) {
+        if (servers.isEmpty()) {
+          newSet = Collections.emptyMap();
+        } else {
+          newSet = Collections.singletonMap(
+              servers.get(currentServerIndex).getAddress(), TransportManager.Retention.PASSIVE);
+        }
+      }
+      tm.updateRetainedTransports(newSet);
     }
   }
 }

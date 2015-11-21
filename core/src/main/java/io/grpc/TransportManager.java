@@ -36,6 +36,7 @@ import com.google.common.util.concurrent.ListenableFuture;
 import io.grpc.internal.ClientTransport;
 
 import java.net.SocketAddress;
+import java.util.Map;
 
 /**
  * Manages transport life-cycles and provide ready-to-use transports.
@@ -43,10 +44,25 @@ import java.net.SocketAddress;
 @ExperimentalApi
 public abstract class TransportManager {
   /**
-   * Advises this {@code TransportManager} to retain transports only to these servers, for warming
-   * up connections and discarding unused connections.
+   * Retention policy of retained transports.
    */
-  public abstract void updateRetainedTransports(SocketAddress[] addrs);
+  public enum Retention {
+    /** Will actively maintain a transport. Will try to reconnect if disconnected. */
+    ACTIVE,
+    /**
+     * Will not close the transport immediately, but may close it later due to idleness.
+     * Will not reconnect if disconnected.
+     */
+    PASSIVE
+  }
+
+  /**
+   * Advises this {@code TransportManager} about the retention policy of transports, for warming up
+   * connections and discarding unused connections.
+   *
+   * <p>Addresses not listed should be closed immediately.
+   */
+  public abstract void updateRetainedTransports(Map<SocketAddress, Retention> addrs);
 
   /**
    * Returns the future of a transport for the given server.

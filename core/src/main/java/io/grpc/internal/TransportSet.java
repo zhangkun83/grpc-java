@@ -42,6 +42,7 @@ import io.grpc.Status;
 import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -71,6 +72,8 @@ final class TransportSet {
   private final BackoffPolicy.Provider backoffPolicyProvider;
   private final Callback callback;
   private final ClientTransportFactory transportFactory;
+  private final ExecutorService executor =
+      SharedResourceHolder.get(GrpcUtil.SHARED_CHANNEL_EXECUTOR);
   private final ScheduledExecutorService scheduledExecutor;
 
   @GuardedBy("lock")
@@ -92,6 +95,9 @@ final class TransportSet {
   private final LoadBalancer loadBalancer;
 
   @GuardedBy("lock")
+  private boolean reconnectionEnabled;
+
+  @GuardedBy("lock")
   private boolean shutdown;
 
   /**
@@ -102,13 +108,14 @@ final class TransportSet {
 
   TransportSet(SocketAddress server, String authority, LoadBalancer loadBalancer,
       BackoffPolicy.Provider backoffPolicyProvider, ClientTransportFactory transportFactory,
-      ScheduledExecutorService scheduledExecutor, Callback callback) {
+      ScheduledExecutorService scheduledExecutor, boolean reconnectionEnabled, Callback callback) {
     this.server = server;
     this.authority = authority;
     this.loadBalancer = loadBalancer;
     this.backoffPolicyProvider = backoffPolicyProvider;
     this.transportFactory = transportFactory;
     this.scheduledExecutor = scheduledExecutor;
+    this.reconnectionEnabled = reconnectionEnabled;
     this.callback = callback;
     createActiveTransportFuture();
   }
@@ -121,6 +128,35 @@ final class TransportSet {
    */
   ListenableFuture<ClientTransport> obtainActiveTransport() {
     return activeTransportFuture;
+  }
+
+  /**
+   * Enables reconnection.
+   *
+   * <p>When transport is closed, will try to reconnect.
+   *
+   * @return {@code true} if enabled successfully; {@code false} if this {@code TransportSet} has
+   *                      already been shutdown.
+   */
+  boolean enableReconnection() {
+    synchronized (lock) {
+      if (shutdown) {
+        return false;
+      }
+      reconnectionEnabled = true;
+      return true;
+    }
+  }
+
+  /**
+   * Disables reconnection.
+   *
+   * <p>When transport is closed, will automatically call {@link #shutdown}.
+   */
+  void disableReconnection() {
+    synchronized (lock) {
+      reconnectionEnabled = false;
+    }
   }
 
   /**
@@ -186,8 +222,8 @@ final class TransportSet {
    * Shut down all transports, may run callback inline.
    */
   void shutdown() {
-    SettableFuture<ClientTransport> savedActiveTransportFuture;
-    boolean runCallback = false;
+    final SettableFuture<ClientTransport> savedActiveTransportFuture;
+    final boolean runCallback;
     synchronized (lock) {
       if (shutdown) {
         return;
@@ -197,26 +233,37 @@ final class TransportSet {
       activeTransportFuture = NULL_VALUE_FUTURE;
       if (transports.isEmpty()) {
         runCallback = true;
+      } else {
+        runCallback = false;
       }
       if (reconnectTask != null) {
         reconnectTask.cancel(false);
-      }
-      // else: the callback will be run once all transports have been terminated
-    }
-    if (savedActiveTransportFuture != null) {
-      if (savedActiveTransportFuture.isDone()) {
-        try {
-          // Should not throw any exception here
-          savedActiveTransportFuture.get().shutdown();
-        } catch (Exception e) {
-          throw Throwables.propagate(e);
+      } // else: the callback will be run once all transports have been terminated
+
+      // Anything that may trigger other callbacks should be executed outside of the lock, to avoid
+      // deadlock. Because shutdown() may be called under the lock, simply moving the following code
+      // out of the synchronized block wouldn't work. We have to use the executor.
+      executor.execute(new Runnable() {
+        @Override public void run() {
+          if (savedActiveTransportFuture != null) {
+            if (savedActiveTransportFuture.isDone()) {
+              try {
+                // Should not throw any exception here
+                savedActiveTransportFuture.get().shutdown();
+              } catch (Exception e) {
+                throw Throwables.propagate(e);
+              }
+            } else {
+              savedActiveTransportFuture.set(null);
+            }
+          }
+          if (runCallback) {
+            callback.onTerminated();
+          }
+          SharedResourceHolder.release(
+              GrpcUtil.SHARED_CHANNEL_EXECUTOR, (ExecutorService) executor);
         }
-      } else {
-        savedActiveTransportFuture.set(null);
-      }
-    }
-    if (runCallback) {
-      callback.onTerminated();
+      });
     }
   }
 
@@ -254,7 +301,13 @@ final class TransportSet {
             new Object[] {transport, server});
         Preconditions.checkState(transportFuture.isDone(), "the transport future is not done");
         if (isAttachedToActiveTransport()) {
-          createActiveTransportFuture();
+          if (reconnectionEnabled) {
+            createActiveTransportFuture();
+          } else {
+            log.log(Level.FINE,
+                "TransportSet for {0} shutting down because reconnection is disabled", server);
+            shutdown();
+          }
         }
       }
       loadBalancer.transportShutdown(server, transport, s);

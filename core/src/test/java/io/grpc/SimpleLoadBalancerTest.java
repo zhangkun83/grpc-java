@@ -31,6 +31,7 @@
 
 package io.grpc;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNotSame;
@@ -48,17 +49,21 @@ import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.SettableFuture;
 
+import io.grpc.TransportManager.Retention;
 import io.grpc.internal.ClientTransport;
 
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
 import java.net.SocketAddress;
 import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 
 /** Unit test for {@link SimpleLoadBalancerFactory}. */
 @RunWith(JUnit4.class)
@@ -107,6 +112,7 @@ public class SimpleLoadBalancerTest {
     ListenableFuture<ClientTransport> f3 = loadBalancer.pickTransport(null);
     assertSame(sourceFuture, f3);
     verify(mockTransportManager, times(3)).getTransport(same(servers.get(0).getAddress()));
+    verifyRetentionUpdated(servers.get(0));
     verifyNoMoreInteractions(mockTransportManager);
   }
 
@@ -123,9 +129,27 @@ public class SimpleLoadBalancerTest {
     ListenableFuture<ClientTransport> f2 = loadBalancer.pickTransport(null);
     assertSame(mockTransport1, f1.get());
     assertSame(mockTransport1, f2.get());
+    verifyRetentionUpdated(servers.get(0));
     loadBalancer.transportShutdown(servers.get(0).getAddress(), mockTransport1, Status.INTERNAL);
     ListenableFuture<ClientTransport> f3 = loadBalancer.pickTransport(null);
     assertSame(mockTransport2, f3.get());
+    verifyRetentionUpdated(servers.get(1));
+  }
+
+  private int verifiedRetentionUpdates = 0;
+
+  private void verifyRetentionUpdated(ResolvedServerInfo expectedServer) {
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<Map<SocketAddress, Retention>> captor =
+        (ArgumentCaptor<Map<SocketAddress, Retention>>) ArgumentCaptor.forClass((Class) Map.class);
+    verify(mockTransportManager, times(verifiedRetentionUpdates + 1))
+        .updateRetainedTransports(captor.capture());
+    List<Map<SocketAddress, Retention>> allUpdates = captor.getAllValues();
+    assertEquals(verifiedRetentionUpdates + 1, allUpdates.size());
+    Map<SocketAddress, Retention> newUpdate = allUpdates.get(verifiedRetentionUpdates);
+    assertEquals(1, newUpdate.size());
+    assertEquals(Retention.PASSIVE, newUpdate.get(expectedServer.getAddress()));
+    verifiedRetentionUpdates ++;
   }
 
   private static class FakeSocketAddress extends SocketAddress {
