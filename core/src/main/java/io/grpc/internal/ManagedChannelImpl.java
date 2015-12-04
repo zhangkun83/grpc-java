@@ -363,6 +363,7 @@ public final class ManagedChannelImpl extends ManagedChannel {
     @Override
     public ListenableFuture<ClientTransport> getTransport(
         final EquivalentAddressGroup addressGroup) {
+      Preconditions.checkNotNull(addressGroup, "addressGroup");
       TransportSet ts;
       synchronized (lock) {
         if (shutdown) {
