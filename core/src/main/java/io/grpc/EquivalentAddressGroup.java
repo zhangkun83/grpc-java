@@ -75,9 +75,6 @@ public final class EquivalentAddressGroup {
 
   @Override
   public boolean equals(Object other) {
-    if (other == null) {
-      return false;
-    }
     if (!(other instanceof EquivalentAddressGroup)) {
       return false;
     }

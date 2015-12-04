@@ -66,12 +66,12 @@ public  final class MassageRequest extends
   }
   public static final com.google.protobuf.Descriptors.Descriptor
       getDescriptor() {
-    return io.grpc.examples.massage.MasssageProto.internal_static_loadbalancer_gslb_client_grpc_MassageRequest_descriptor;
+    return io.grpc.examples.massage.MassageProto.internal_static_loadbalancer_gslb_client_grpc_MassageRequest_descriptor;
   }
 
   protected com.google.protobuf.GeneratedMessage.FieldAccessorTable
       internalGetFieldAccessorTable() {
-    return io.grpc.examples.massage.MasssageProto.internal_static_loadbalancer_gslb_client_grpc_MassageRequest_fieldAccessorTable
+    return io.grpc.examples.massage.MassageProto.internal_static_loadbalancer_gslb_client_grpc_MassageRequest_fieldAccessorTable
         .ensureFieldAccessorsInitialized(
             io.grpc.examples.massage.MassageRequest.class, io.grpc.examples.massage.MassageRequest.Builder.class);
   }
@@ -224,12 +224,12 @@ public  final class MassageRequest extends
       io.grpc.examples.massage.MassageRequestOrBuilder {
     public static final com.google.protobuf.Descriptors.Descriptor
         getDescriptor() {
-      return io.grpc.examples.massage.MasssageProto.internal_static_loadbalancer_gslb_client_grpc_MassageRequest_descriptor;
+      return io.grpc.examples.massage.MassageProto.internal_static_loadbalancer_gslb_client_grpc_MassageRequest_descriptor;
     }
 
     protected com.google.protobuf.GeneratedMessage.FieldAccessorTable
         internalGetFieldAccessorTable() {
-      return io.grpc.examples.massage.MasssageProto.internal_static_loadbalancer_gslb_client_grpc_MassageRequest_fieldAccessorTable
+      return io.grpc.examples.massage.MassageProto.internal_static_loadbalancer_gslb_client_grpc_MassageRequest_fieldAccessorTable
           .ensureFieldAccessorsInitialized(
               io.grpc.examples.massage.MassageRequest.class, io.grpc.examples.massage.MassageRequest.Builder.class);
     }
@@ -257,7 +257,7 @@ public  final class MassageRequest extends
 
     public com.google.protobuf.Descriptors.Descriptor
         getDescriptorForType() {
-      return io.grpc.examples.massage.MasssageProto.internal_static_loadbalancer_gslb_client_grpc_MassageRequest_descriptor;
+      return io.grpc.examples.massage.MassageProto.internal_static_loadbalancer_gslb_client_grpc_MassageRequest_descriptor;
     }
 
     public io.grpc.examples.massage.MassageRequest getDefaultInstanceForType() {
