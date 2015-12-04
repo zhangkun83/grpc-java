@@ -269,6 +269,7 @@ class GrpclbLoadBalancer extends LoadBalancer {
         // TODO(zhangkun83): make use of initialResponse
         RoundRobinServerList.Builder listBuilder = new RoundRobinServerList.Builder(tm);
         ServerList serverList = response.getServerList();
+        // TODO(zhangkun83): honor expiration_interval
         for (Server server : serverList.getServersList()) {
           if (server.getDropRequest()) {
             listBuilder.add(null);
@@ -276,7 +277,8 @@ class GrpclbLoadBalancer extends LoadBalancer {
             InetSocketAddress address = new InetSocketAddress(
                 server.getIpAddress(), server.getPort());
             listBuilder.add(address);
-            // TODO(zhangkun83): fill the lb token to the attributes
+            // TODO(zhangkun83): fill the LB token to the attributes, and insert it to the
+            // application RPCs.
             if (!newServerMap.containsKey(address)) {
               newServerMap.put(address, new ResolvedServerInfo(address, Attributes.EMPTY));
             }
