@@ -31,6 +31,7 @@
 
 package io.grpc.grpclb;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.util.concurrent.ListenableFuture;
 
@@ -78,6 +79,11 @@ class RoundRobinServerList {
     }
     return Preconditions.checkNotNull(tm.getTransport(currentServer),
         "TransportManager returned null for %s", currentServer);
+  }
+
+  @VisibleForTesting
+  List<EquivalentAddressGroup> getList() {
+    return list;
   }
 
   int size() {

@@ -95,15 +95,15 @@ class GrpclbLoadBalancer extends LoadBalancer {
   private EquivalentAddressGroup lbAddresses;
   @GuardedBy("lock")
   private ClientTransport lbTransport;
-  @VisibleForTesting
   @GuardedBy("lock")
-  StreamObserver<LoadBalanceResponse> lbResponseObserver;
+  private StreamObserver<LoadBalanceResponse> lbResponseObserver;
 
   // Server list states
   @GuardedBy("lock")
   private final HashMap<SocketAddress, ResolvedServerInfo> servers =
       new HashMap<SocketAddress, ResolvedServerInfo>();
   @GuardedBy("lock")
+  @VisibleForTesting
   private RoundRobinServerList roundRobinServerList;
 
   private ExecutorService executor;
@@ -114,6 +114,20 @@ class GrpclbLoadBalancer extends LoadBalancer {
     this.tm = tm;
     executor = SharedResourceHolder.get(GrpcUtil.SHARED_CHANNEL_EXECUTOR);
     deadlineCancellationExecutor = SharedResourceHolder.get(GrpcUtil.TIMER_SERVICE);
+  }
+
+  @VisibleForTesting
+  StreamObserver<LoadBalanceResponse> getLbResponseObserver() {
+    synchronized (lock) {
+      return lbResponseObserver;
+    }
+  }
+
+  @VisibleForTesting
+  RoundRobinServerList getRoundRobinServerList() {
+    synchronized (lock) {
+      return roundRobinServerList;
+    }
   }
 
   @Override
