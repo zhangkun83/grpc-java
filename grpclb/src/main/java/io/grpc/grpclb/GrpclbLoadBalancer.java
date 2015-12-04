@@ -101,8 +101,7 @@ class GrpclbLoadBalancer extends LoadBalancer {
 
   // Server list states
   @GuardedBy("lock")
-  private final HashMap<SocketAddress, ResolvedServerInfo> servers =
-      new HashMap<SocketAddress, ResolvedServerInfo>();
+  private HashMap<SocketAddress, ResolvedServerInfo> servers;
   @GuardedBy("lock")
   @VisibleForTesting
   private RoundRobinServerList roundRobinServerList;
@@ -263,11 +262,12 @@ class GrpclbLoadBalancer extends LoadBalancer {
       logger.info("Got a LB response: " + response);
       FulfillmentBatch<ClientTransport> pendingPicksFulfillmentBatch;
       final RoundRobinServerList newRoundRobinServerList;
+      HashMap<SocketAddress, ResolvedServerInfo> newServerMap =
+          new HashMap<SocketAddress, ResolvedServerInfo>();
       synchronized (lock) {
         InitialLoadBalanceResponse initialResponse = response.getInitialResponse();
         // TODO(zhangkun83): make use of initialResponse
         RoundRobinServerList.Builder listBuilder = new RoundRobinServerList.Builder(tm);
-        servers.clear();
         ServerList serverList = response.getServerList();
         for (Server server : serverList.getServersList()) {
           if (server.getDropRequest()) {
@@ -276,11 +276,9 @@ class GrpclbLoadBalancer extends LoadBalancer {
             InetSocketAddress address = new InetSocketAddress(
                 server.getIpAddress(), server.getPort());
             listBuilder.add(address);
-            ResolvedServerInfo serverInfo = servers.get(address);
-            if (serverInfo == null) {
-              // TODO(zhangkun83): fill the lb token to the attributes
-              serverInfo = new ResolvedServerInfo(address, Attributes.EMPTY);
-              servers.put(address, serverInfo);
+            // TODO(zhangkun83): fill the lb token to the attributes
+            if (!newServerMap.containsKey(address)) {
+              newServerMap.put(address, new ResolvedServerInfo(address, Attributes.EMPTY));
             }
           }
         }
@@ -289,9 +287,10 @@ class GrpclbLoadBalancer extends LoadBalancer {
           return;
         }
         roundRobinServerList = newRoundRobinServerList;
-        tm.updateRetainedTransports(servers.keySet());
+        servers = newServerMap;
         pendingPicksFulfillmentBatch = pendingPicks.createFulfillmentBatch();
       }
+      tm.updateRetainedTransports(newServerMap.keySet());
       pendingPicksFulfillmentBatch.link(
           new Supplier<ListenableFuture<ClientTransport>>() {
             @Override

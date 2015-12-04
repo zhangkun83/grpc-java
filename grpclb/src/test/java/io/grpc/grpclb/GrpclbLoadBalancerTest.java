@@ -61,8 +61,11 @@ import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
 import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
@@ -128,6 +131,8 @@ public class GrpclbLoadBalancerTest {
     assertNotNull(loadBalancer.getLbResponseObserver());
     loadBalancer.getLbResponseObserver().onNext(buildLbResponse(serverList1));
 
+    verify(mockTransportManager).updateRetainedTransports(eq(buildSocketAddressSet(servers)));
+
     assertFalse(pick0.isDone());
     assertFalse(pick1.isDone());
 
@@ -173,6 +178,7 @@ public class GrpclbLoadBalancerTest {
     // Simulate LB server responds a server list
     List<ResolvedServerInfo> serverList = createResolvedServerInfoList(4000, 4001);
     loadBalancer.getLbResponseObserver().onNext(buildLbResponse(serverList));
+    verify(mockTransportManager).updateRetainedTransports(eq(buildSocketAddressSet(serverList)));
 
     // The server list is in effect
     assertEquals(buildRoundRobinList(serverList), loadBalancer.getRoundRobinServerList().getList());
@@ -180,6 +186,7 @@ public class GrpclbLoadBalancerTest {
     // Simulate LB server responds another server list
     serverList = createResolvedServerInfoList(4002, 4003);
     loadBalancer.getLbResponseObserver().onNext(buildLbResponse(serverList));
+    verify(mockTransportManager).updateRetainedTransports(eq(buildSocketAddressSet(serverList)));
 
     // The new list is in effect
     assertEquals(buildRoundRobinList(serverList), loadBalancer.getRoundRobinServerList().getList());
@@ -420,6 +427,15 @@ public class GrpclbLoadBalancerTest {
       roundRobinList.add(new EquivalentAddressGroup(serverInfo.getAddress()));
     }
     return roundRobinList;
+  }
+
+  private static HashSet<SocketAddress> buildSocketAddressSet(
+      Collection<ResolvedServerInfo> serverInfos) {
+    HashSet<SocketAddress> addrs = new HashSet<SocketAddress>();
+    for (ResolvedServerInfo serverInfo : serverInfos) {
+      addrs.add(serverInfo.getAddress());
+    }
+    return addrs;
   }
 
   private static List<ResolvedServerInfo> createResolvedServerInfoList(int ... ports) {
