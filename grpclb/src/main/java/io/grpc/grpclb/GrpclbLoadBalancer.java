@@ -71,7 +71,6 @@ import javax.annotation.concurrent.GuardedBy;
 /**
  * A {@link LoadBalancer} that uses the GRPCLB protocol.
  */
-@ExperimentalApi
 class GrpclbLoadBalancer extends LoadBalancer {
   private static final Logger logger = Logger.getLogger(GrpclbLoadBalancer.class.getName());
 
