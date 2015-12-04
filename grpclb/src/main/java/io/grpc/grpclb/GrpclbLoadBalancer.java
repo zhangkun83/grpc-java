@@ -75,10 +75,6 @@ import javax.annotation.concurrent.GuardedBy;
 class GrpclbLoadBalancer extends LoadBalancer {
   private static final Logger logger = Logger.getLogger(GrpclbLoadBalancer.class.getName());
 
-  enum State {
-    INIT, CONNECTING, NEGOTIATING, WORKING, CLOSED
-  }
-
   private final Object lock = new Object();
   private final String serviceName;
   private final TransportManager tm;
@@ -87,6 +83,9 @@ class GrpclbLoadBalancer extends LoadBalancer {
   @GuardedBy("lock")
   private final BlankFutureProvider<ClientTransport> pendingPicks =
       new BlankFutureProvider<ClientTransport>();
+  @GuardedBy("lock")
+  private Throwable lastError;
+
   @GuardedBy("lock")
   private boolean closed;
 
@@ -97,6 +96,8 @@ class GrpclbLoadBalancer extends LoadBalancer {
   private ClientTransport lbTransport;
   @GuardedBy("lock")
   private StreamObserver<LoadBalanceResponse> lbResponseObserver;
+  @GuardedBy("lock")
+  private StreamObserver<LoadBalanceRequest> lbRequestWriter;
 
   // Server list states
   @GuardedBy("lock")
@@ -136,7 +137,11 @@ class GrpclbLoadBalancer extends LoadBalancer {
     synchronized (lock) {
       Preconditions.checkState(!closed, "already closed");
       if (roundRobinServerList == null) {
-        return pendingPicks.newBlankFuture();
+        if (lastError == null) {
+          return pendingPicks.newBlankFuture();
+        } else {
+          return Futures.immediateFailedFuture(lastError);
+        }
       }
       serverListCopy = roundRobinServerList;
     }
@@ -207,8 +212,8 @@ class GrpclbLoadBalancer extends LoadBalancer {
     Channel channel = new SingleTransportChannel(transport, executor,
         deadlineCancellationExecutor, serviceName);
     LoadBalancerGrpc.LoadBalancerStub stub = LoadBalancerGrpc.newStub(channel);
-    StreamObserver<LoadBalanceRequest> requestWriter = stub.balanceLoad(lbResponseObserver);
-    requestWriter.onNext(request);
+    lbRequestWriter = stub.balanceLoad(lbResponseObserver);
+    lbRequestWriter.onNext(request);
   }
 
   @Override
@@ -223,7 +228,9 @@ class GrpclbLoadBalancer extends LoadBalancer {
         return;
       }
       closed = true;
-      // TODO(zhangkun83): clean up connections
+      if (lbRequestWriter != null) {
+        lbRequestWriter.onCompleted();
+      }
       executor = SharedResourceHolder.release(GrpcUtil.SHARED_CHANNEL_EXECUTOR, executor);
       deadlineCancellationExecutor = SharedResourceHolder.release(
           GrpcUtil.TIMER_SERVICE, deadlineCancellationExecutor);
@@ -233,6 +240,7 @@ class GrpclbLoadBalancer extends LoadBalancer {
   @Override
   public void transportShutdown(
       EquivalentAddressGroup addressGroup, ClientTransport transport, Status status) {
+    handleError(status.augmentDescription("Transport to LB server closed"));
     synchronized (lock) {
       if (transport == lbTransport) {
         connectToLb();
@@ -244,6 +252,7 @@ class GrpclbLoadBalancer extends LoadBalancer {
     FulfillmentBatch<ClientTransport> pendingPicksFulfillmentBatch;
     StatusException statusException = error.asException();
     synchronized (lock) {
+      lastError = statusException;
       pendingPicksFulfillmentBatch = pendingPicks.createFulfillmentBatch();
     }
     pendingPicksFulfillmentBatch.fail(statusException);
@@ -293,19 +302,23 @@ class GrpclbLoadBalancer extends LoadBalancer {
     }
 
     @Override public void onError(Throwable error) {
-      handleError(Status.fromThrowable(error)
-          .augmentDescription("RPC to GRPCLB LoadBalancer failed"));
+      onStreamClosed(Status.fromThrowable(error)
+          .augmentDescription("Stream to GRPCLB LoadBalancer had an error"));
+    }
+
+    @Override public void onCompleted() {
+      onStreamClosed(Status.UNAVAILABLE.augmentDescription(
+          "Stream to GRPCLB LoadBalancer was closed"));
+    }
+
+    private void onStreamClosed(Status status) {
+      handleError(status);
       synchronized (this) {
         if (lbResponseObserver == this) {
           // I am still the active LB stream. Reopen the stream.
           startNegotiation();
         }
       }
-      // TODO(zhangkun83): re-initiate connecting to LB
-    }
-
-    @Override public void onCompleted() {
-      // TODO(zhangkun83): re-initiate connecting to LB
     }
   }
 }
