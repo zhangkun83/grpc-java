@@ -4,7 +4,7 @@
 package io.grpc.grpclb;
 
 public interface ServerOrBuilder extends
-    // @@protoc_insertion_point(interface_extends:loadbalancer_gslb.client.grpc.Server)
+    // @@protoc_insertion_point(interface_extends:grpc.lb.v1.Server)
     com.google.protobuf.MessageOrBuilder {
 
   /**
@@ -33,17 +33,26 @@ public interface ServerOrBuilder extends
   int getPort();
 
   /**
-   * <code>optional bytes load_balance_token = 3;</code>
+   * <code>optional string load_balance_token = 3;</code>
    *
    * <pre>
    * An opaque token that is passed from the client to the server in metadata.
    * The server may expect this token to indicate that the request from the
    * client was load balanced.
-   * TODO(yetianx): Not used right now, and will be used after implementing
-   * load report.
    * </pre>
    */
-  com.google.protobuf.ByteString getLoadBalanceToken();
+  java.lang.String getLoadBalanceToken();
+  /**
+   * <code>optional string load_balance_token = 3;</code>
+   *
+   * <pre>
+   * An opaque token that is passed from the client to the server in metadata.
+   * The server may expect this token to indicate that the request from the
+   * client was load balanced.
+   * </pre>
+   */
+  com.google.protobuf.ByteString
+      getLoadBalanceTokenBytes();
 
   /**
    * <code>optional bool drop_request = 4;</code>

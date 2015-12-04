@@ -4,28 +4,8 @@
 package io.grpc.grpclb;
 
 public interface InitialLoadBalanceResponseOrBuilder extends
-    // @@protoc_insertion_point(interface_extends:loadbalancer_gslb.client.grpc.InitialLoadBalanceResponse)
+    // @@protoc_insertion_point(interface_extends:grpc.lb.v1.InitialLoadBalanceResponse)
     com.google.protobuf.MessageOrBuilder {
-
-  /**
-   * <code>optional string client_config = 1;</code>
-   *
-   * <pre>
-   * Contains gRPC config options like RPC deadline or flow control.
-   * TODO(yetianx): Change to ClientConfig after it is defined.
-   * </pre>
-   */
-  java.lang.String getClientConfig();
-  /**
-   * <code>optional string client_config = 1;</code>
-   *
-   * <pre>
-   * Contains gRPC config options like RPC deadline or flow control.
-   * TODO(yetianx): Change to ClientConfig after it is defined.
-   * </pre>
-   */
-  com.google.protobuf.ByteString
-      getClientConfigBytes();
 
   /**
    * <code>optional string load_balancer_delegate = 2;</code>

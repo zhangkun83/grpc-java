@@ -4,14 +4,14 @@
 package io.grpc.grpclb;
 
 public interface InitialLoadBalanceRequestOrBuilder extends
-    // @@protoc_insertion_point(interface_extends:loadbalancer_gslb.client.grpc.InitialLoadBalanceRequest)
+    // @@protoc_insertion_point(interface_extends:grpc.lb.v1.InitialLoadBalanceRequest)
     com.google.protobuf.MessageOrBuilder {
 
   /**
    * <code>optional string name = 1;</code>
    *
    * <pre>
-   * Name of load balanced service (IE, service.grpc.gslb.google.com)
+   * Name of load balanced service
    * </pre>
    */
   java.lang.String getName();
@@ -19,7 +19,7 @@ public interface InitialLoadBalanceRequestOrBuilder extends
    * <code>optional string name = 1;</code>
    *
    * <pre>
-   * Name of load balanced service (IE, service.grpc.gslb.google.com)
+   * Name of load balanced service
    * </pre>
    */
   com.google.protobuf.ByteString

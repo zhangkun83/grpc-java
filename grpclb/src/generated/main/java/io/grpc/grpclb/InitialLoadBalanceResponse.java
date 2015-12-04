@@ -4,11 +4,11 @@
 package io.grpc.grpclb;
 
 /**
- * Protobuf type {@code loadbalancer_gslb.client.grpc.InitialLoadBalanceResponse}
+ * Protobuf type {@code grpc.lb.v1.InitialLoadBalanceResponse}
  */
 public  final class InitialLoadBalanceResponse extends
     com.google.protobuf.GeneratedMessage implements
-    // @@protoc_insertion_point(message_implements:loadbalancer_gslb.client.grpc.InitialLoadBalanceResponse)
+    // @@protoc_insertion_point(message_implements:grpc.lb.v1.InitialLoadBalanceResponse)
     InitialLoadBalanceResponseOrBuilder {
   // Use InitialLoadBalanceResponse.newBuilder() to construct.
   private InitialLoadBalanceResponse(com.google.protobuf.GeneratedMessage.Builder<?> builder) {
@@ -39,12 +39,6 @@ public  final class InitialLoadBalanceResponse extends
             if (!input.skipField(tag)) {
               done = true;
             }
-            break;
-          }
-          case 10: {
-            String s = input.readStringRequireUtf8();
-            initialResponseTypeCase_ = 1;
-            initialResponseType_ = s;
             break;
           }
           case 18: {
@@ -80,12 +74,12 @@ public  final class InitialLoadBalanceResponse extends
   }
   public static final com.google.protobuf.Descriptors.Descriptor
       getDescriptor() {
-    return io.grpc.grpclb.LoadBalancerProto.internal_static_loadbalancer_gslb_client_grpc_InitialLoadBalanceResponse_descriptor;
+    return io.grpc.grpclb.LoadBalancerProto.internal_static_grpc_lb_v1_InitialLoadBalanceResponse_descriptor;
   }
 
   protected com.google.protobuf.GeneratedMessage.FieldAccessorTable
       internalGetFieldAccessorTable() {
-    return io.grpc.grpclb.LoadBalancerProto.internal_static_loadbalancer_gslb_client_grpc_InitialLoadBalanceResponse_fieldAccessorTable
+    return io.grpc.grpclb.LoadBalancerProto.internal_static_grpc_lb_v1_InitialLoadBalanceResponse_fieldAccessorTable
         .ensureFieldAccessorsInitialized(
             io.grpc.grpclb.InitialLoadBalanceResponse.class, io.grpc.grpclb.InitialLoadBalanceResponse.Builder.class);
   }
@@ -94,7 +88,6 @@ public  final class InitialLoadBalanceResponse extends
   private java.lang.Object initialResponseType_;
   public enum InitialResponseTypeCase
       implements com.google.protobuf.Internal.EnumLite {
-    CLIENT_CONFIG(1),
     LOAD_BALANCER_DELEGATE(2),
     INITIALRESPONSETYPE_NOT_SET(0);
     private int value = 0;
@@ -103,7 +96,6 @@ public  final class InitialLoadBalanceResponse extends
     }
     public static InitialResponseTypeCase valueOf(int value) {
       switch (value) {
-        case 1: return CLIENT_CONFIG;
         case 2: return LOAD_BALANCER_DELEGATE;
         case 0: return INITIALRESPONSETYPE_NOT_SET;
         default: throw new java.lang.IllegalArgumentException(
@@ -119,59 +111,6 @@ public  final class InitialLoadBalanceResponse extends
   getInitialResponseTypeCase() {
     return InitialResponseTypeCase.valueOf(
         initialResponseTypeCase_);
-  }
-
-  public static final int CLIENT_CONFIG_FIELD_NUMBER = 1;
-  /**
-   * <code>optional string client_config = 1;</code>
-   *
-   * <pre>
-   * Contains gRPC config options like RPC deadline or flow control.
-   * TODO(yetianx): Change to ClientConfig after it is defined.
-   * </pre>
-   */
-  public java.lang.String getClientConfig() {
-    java.lang.Object ref = "";
-    if (initialResponseTypeCase_ == 1) {
-      ref = initialResponseType_;
-    }
-    if (ref instanceof java.lang.String) {
-      return (java.lang.String) ref;
-    } else {
-      com.google.protobuf.ByteString bs = 
-          (com.google.protobuf.ByteString) ref;
-      java.lang.String s = bs.toStringUtf8();
-      if (initialResponseTypeCase_ == 1) {
-        initialResponseType_ = s;
-      }
-      return s;
-    }
-  }
-  /**
-   * <code>optional string client_config = 1;</code>
-   *
-   * <pre>
-   * Contains gRPC config options like RPC deadline or flow control.
-   * TODO(yetianx): Change to ClientConfig after it is defined.
-   * </pre>
-   */
-  public com.google.protobuf.ByteString
-      getClientConfigBytes() {
-    java.lang.Object ref = "";
-    if (initialResponseTypeCase_ == 1) {
-      ref = initialResponseType_;
-    }
-    if (ref instanceof java.lang.String) {
-      com.google.protobuf.ByteString b = 
-          com.google.protobuf.ByteString.copyFromUtf8(
-              (java.lang.String) ref);
-      if (initialResponseTypeCase_ == 1) {
-        initialResponseType_ = b;
-      }
-      return b;
-    } else {
-      return (com.google.protobuf.ByteString) ref;
-    }
   }
 
   public static final int LOAD_BALANCER_DELEGATE_FIELD_NUMBER = 2;
@@ -282,9 +221,6 @@ public  final class InitialLoadBalanceResponse extends
 
   public void writeTo(com.google.protobuf.CodedOutputStream output)
                       throws java.io.IOException {
-    if (initialResponseTypeCase_ == 1) {
-      com.google.protobuf.GeneratedMessage.writeString(output, 1, initialResponseType_);
-    }
     if (initialResponseTypeCase_ == 2) {
       com.google.protobuf.GeneratedMessage.writeString(output, 2, initialResponseType_);
     }
@@ -298,9 +234,6 @@ public  final class InitialLoadBalanceResponse extends
     if (size != -1) return size;
 
     size = 0;
-    if (initialResponseTypeCase_ == 1) {
-      size += com.google.protobuf.GeneratedMessage.computeStringSize(1, initialResponseType_);
-    }
     if (initialResponseTypeCase_ == 2) {
       size += com.google.protobuf.GeneratedMessage.computeStringSize(2, initialResponseType_);
     }
@@ -385,20 +318,20 @@ public  final class InitialLoadBalanceResponse extends
     return builder;
   }
   /**
-   * Protobuf type {@code loadbalancer_gslb.client.grpc.InitialLoadBalanceResponse}
+   * Protobuf type {@code grpc.lb.v1.InitialLoadBalanceResponse}
    */
   public static final class Builder extends
       com.google.protobuf.GeneratedMessage.Builder<Builder> implements
-      // @@protoc_insertion_point(builder_implements:loadbalancer_gslb.client.grpc.InitialLoadBalanceResponse)
+      // @@protoc_insertion_point(builder_implements:grpc.lb.v1.InitialLoadBalanceResponse)
       io.grpc.grpclb.InitialLoadBalanceResponseOrBuilder {
     public static final com.google.protobuf.Descriptors.Descriptor
         getDescriptor() {
-      return io.grpc.grpclb.LoadBalancerProto.internal_static_loadbalancer_gslb_client_grpc_InitialLoadBalanceResponse_descriptor;
+      return io.grpc.grpclb.LoadBalancerProto.internal_static_grpc_lb_v1_InitialLoadBalanceResponse_descriptor;
     }
 
     protected com.google.protobuf.GeneratedMessage.FieldAccessorTable
         internalGetFieldAccessorTable() {
-      return io.grpc.grpclb.LoadBalancerProto.internal_static_loadbalancer_gslb_client_grpc_InitialLoadBalanceResponse_fieldAccessorTable
+      return io.grpc.grpclb.LoadBalancerProto.internal_static_grpc_lb_v1_InitialLoadBalanceResponse_fieldAccessorTable
           .ensureFieldAccessorsInitialized(
               io.grpc.grpclb.InitialLoadBalanceResponse.class, io.grpc.grpclb.InitialLoadBalanceResponse.Builder.class);
     }
@@ -432,7 +365,7 @@ public  final class InitialLoadBalanceResponse extends
 
     public com.google.protobuf.Descriptors.Descriptor
         getDescriptorForType() {
-      return io.grpc.grpclb.LoadBalancerProto.internal_static_loadbalancer_gslb_client_grpc_InitialLoadBalanceResponse_descriptor;
+      return io.grpc.grpclb.LoadBalancerProto.internal_static_grpc_lb_v1_InitialLoadBalanceResponse_descriptor;
     }
 
     public io.grpc.grpclb.InitialLoadBalanceResponse getDefaultInstanceForType() {
@@ -449,9 +382,6 @@ public  final class InitialLoadBalanceResponse extends
 
     public io.grpc.grpclb.InitialLoadBalanceResponse buildPartial() {
       io.grpc.grpclb.InitialLoadBalanceResponse result = new io.grpc.grpclb.InitialLoadBalanceResponse(this);
-      if (initialResponseTypeCase_ == 1) {
-        result.initialResponseType_ = initialResponseType_;
-      }
       if (initialResponseTypeCase_ == 2) {
         result.initialResponseType_ = initialResponseType_;
       }
@@ -480,12 +410,6 @@ public  final class InitialLoadBalanceResponse extends
         mergeClientStatsReportInterval(other.getClientStatsReportInterval());
       }
       switch (other.getInitialResponseTypeCase()) {
-        case CLIENT_CONFIG: {
-          initialResponseTypeCase_ = 1;
-          initialResponseType_ = other.initialResponseType_;
-          onChanged();
-          break;
-        }
         case LOAD_BALANCER_DELEGATE: {
           initialResponseTypeCase_ = 2;
           initialResponseType_ = other.initialResponseType_;
@@ -536,111 +460,6 @@ public  final class InitialLoadBalanceResponse extends
       return this;
     }
 
-
-    /**
-     * <code>optional string client_config = 1;</code>
-     *
-     * <pre>
-     * Contains gRPC config options like RPC deadline or flow control.
-     * TODO(yetianx): Change to ClientConfig after it is defined.
-     * </pre>
-     */
-    public java.lang.String getClientConfig() {
-      java.lang.Object ref = "";
-      if (initialResponseTypeCase_ == 1) {
-        ref = initialResponseType_;
-      }
-      if (!(ref instanceof java.lang.String)) {
-        com.google.protobuf.ByteString bs =
-            (com.google.protobuf.ByteString) ref;
-        java.lang.String s = bs.toStringUtf8();
-        if (initialResponseTypeCase_ == 1) {
-          initialResponseType_ = s;
-        }
-        return s;
-      } else {
-        return (java.lang.String) ref;
-      }
-    }
-    /**
-     * <code>optional string client_config = 1;</code>
-     *
-     * <pre>
-     * Contains gRPC config options like RPC deadline or flow control.
-     * TODO(yetianx): Change to ClientConfig after it is defined.
-     * </pre>
-     */
-    public com.google.protobuf.ByteString
-        getClientConfigBytes() {
-      java.lang.Object ref = "";
-      if (initialResponseTypeCase_ == 1) {
-        ref = initialResponseType_;
-      }
-      if (ref instanceof String) {
-        com.google.protobuf.ByteString b = 
-            com.google.protobuf.ByteString.copyFromUtf8(
-                (java.lang.String) ref);
-        if (initialResponseTypeCase_ == 1) {
-          initialResponseType_ = b;
-        }
-        return b;
-      } else {
-        return (com.google.protobuf.ByteString) ref;
-      }
-    }
-    /**
-     * <code>optional string client_config = 1;</code>
-     *
-     * <pre>
-     * Contains gRPC config options like RPC deadline or flow control.
-     * TODO(yetianx): Change to ClientConfig after it is defined.
-     * </pre>
-     */
-    public Builder setClientConfig(
-        java.lang.String value) {
-      if (value == null) {
-    throw new NullPointerException();
-  }
-  initialResponseTypeCase_ = 1;
-      initialResponseType_ = value;
-      onChanged();
-      return this;
-    }
-    /**
-     * <code>optional string client_config = 1;</code>
-     *
-     * <pre>
-     * Contains gRPC config options like RPC deadline or flow control.
-     * TODO(yetianx): Change to ClientConfig after it is defined.
-     * </pre>
-     */
-    public Builder clearClientConfig() {
-      if (initialResponseTypeCase_ == 1) {
-        initialResponseTypeCase_ = 0;
-        initialResponseType_ = null;
-        onChanged();
-      }
-      return this;
-    }
-    /**
-     * <code>optional string client_config = 1;</code>
-     *
-     * <pre>
-     * Contains gRPC config options like RPC deadline or flow control.
-     * TODO(yetianx): Change to ClientConfig after it is defined.
-     * </pre>
-     */
-    public Builder setClientConfigBytes(
-        com.google.protobuf.ByteString value) {
-      if (value == null) {
-    throw new NullPointerException();
-  }
-  checkByteStringIsUtf8(value);
-      initialResponseTypeCase_ = 1;
-      initialResponseType_ = value;
-      onChanged();
-      return this;
-    }
 
     /**
      * <code>optional string load_balancer_delegate = 2;</code>
@@ -938,10 +757,10 @@ public  final class InitialLoadBalanceResponse extends
     }
 
 
-    // @@protoc_insertion_point(builder_scope:loadbalancer_gslb.client.grpc.InitialLoadBalanceResponse)
+    // @@protoc_insertion_point(builder_scope:grpc.lb.v1.InitialLoadBalanceResponse)
   }
 
-  // @@protoc_insertion_point(class_scope:loadbalancer_gslb.client.grpc.InitialLoadBalanceResponse)
+  // @@protoc_insertion_point(class_scope:grpc.lb.v1.InitialLoadBalanceResponse)
   private static final io.grpc.grpclb.InitialLoadBalanceResponse DEFAULT_INSTANCE;
   static {
     DEFAULT_INSTANCE = new io.grpc.grpclb.InitialLoadBalanceResponse();

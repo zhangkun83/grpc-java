@@ -4,11 +4,11 @@
 package io.grpc.grpclb;
 
 /**
- * Protobuf type {@code loadbalancer_gslb.client.grpc.Server}
+ * Protobuf type {@code grpc.lb.v1.Server}
  */
 public  final class Server extends
     com.google.protobuf.GeneratedMessage implements
-    // @@protoc_insertion_point(message_implements:loadbalancer_gslb.client.grpc.Server)
+    // @@protoc_insertion_point(message_implements:grpc.lb.v1.Server)
     ServerOrBuilder {
   // Use Server.newBuilder() to construct.
   private Server(com.google.protobuf.GeneratedMessage.Builder<?> builder) {
@@ -17,7 +17,7 @@ public  final class Server extends
   private Server() {
     ipAddress_ = "";
     port_ = 0;
-    loadBalanceToken_ = com.google.protobuf.ByteString.EMPTY;
+    loadBalanceToken_ = "";
     dropRequest_ = false;
   }
 
@@ -57,8 +57,9 @@ public  final class Server extends
             break;
           }
           case 26: {
+            String s = input.readStringRequireUtf8();
 
-            loadBalanceToken_ = input.readBytes();
+            loadBalanceToken_ = s;
             break;
           }
           case 32: {
@@ -80,12 +81,12 @@ public  final class Server extends
   }
   public static final com.google.protobuf.Descriptors.Descriptor
       getDescriptor() {
-    return io.grpc.grpclb.LoadBalancerProto.internal_static_loadbalancer_gslb_client_grpc_Server_descriptor;
+    return io.grpc.grpclb.LoadBalancerProto.internal_static_grpc_lb_v1_Server_descriptor;
   }
 
   protected com.google.protobuf.GeneratedMessage.FieldAccessorTable
       internalGetFieldAccessorTable() {
-    return io.grpc.grpclb.LoadBalancerProto.internal_static_loadbalancer_gslb_client_grpc_Server_fieldAccessorTable
+    return io.grpc.grpclb.LoadBalancerProto.internal_static_grpc_lb_v1_Server_fieldAccessorTable
         .ensureFieldAccessorsInitialized(
             io.grpc.grpclb.Server.class, io.grpc.grpclb.Server.Builder.class);
   }
@@ -144,20 +145,49 @@ public  final class Server extends
   }
 
   public static final int LOAD_BALANCE_TOKEN_FIELD_NUMBER = 3;
-  private com.google.protobuf.ByteString loadBalanceToken_;
+  private volatile java.lang.Object loadBalanceToken_;
   /**
-   * <code>optional bytes load_balance_token = 3;</code>
+   * <code>optional string load_balance_token = 3;</code>
    *
    * <pre>
    * An opaque token that is passed from the client to the server in metadata.
    * The server may expect this token to indicate that the request from the
    * client was load balanced.
-   * TODO(yetianx): Not used right now, and will be used after implementing
-   * load report.
    * </pre>
    */
-  public com.google.protobuf.ByteString getLoadBalanceToken() {
-    return loadBalanceToken_;
+  public java.lang.String getLoadBalanceToken() {
+    java.lang.Object ref = loadBalanceToken_;
+    if (ref instanceof java.lang.String) {
+      return (java.lang.String) ref;
+    } else {
+      com.google.protobuf.ByteString bs = 
+          (com.google.protobuf.ByteString) ref;
+      java.lang.String s = bs.toStringUtf8();
+      loadBalanceToken_ = s;
+      return s;
+    }
+  }
+  /**
+   * <code>optional string load_balance_token = 3;</code>
+   *
+   * <pre>
+   * An opaque token that is passed from the client to the server in metadata.
+   * The server may expect this token to indicate that the request from the
+   * client was load balanced.
+   * </pre>
+   */
+  public com.google.protobuf.ByteString
+      getLoadBalanceTokenBytes() {
+    java.lang.Object ref = loadBalanceToken_;
+    if (ref instanceof java.lang.String) {
+      com.google.protobuf.ByteString b = 
+          com.google.protobuf.ByteString.copyFromUtf8(
+              (java.lang.String) ref);
+      loadBalanceToken_ = b;
+      return b;
+    } else {
+      return (com.google.protobuf.ByteString) ref;
+    }
   }
 
   public static final int DROP_REQUEST_FIELD_NUMBER = 4;
@@ -192,8 +222,8 @@ public  final class Server extends
     if (port_ != 0) {
       output.writeInt32(2, port_);
     }
-    if (!loadBalanceToken_.isEmpty()) {
-      output.writeBytes(3, loadBalanceToken_);
+    if (!getLoadBalanceTokenBytes().isEmpty()) {
+      com.google.protobuf.GeneratedMessage.writeString(output, 3, loadBalanceToken_);
     }
     if (dropRequest_ != false) {
       output.writeBool(4, dropRequest_);
@@ -212,9 +242,8 @@ public  final class Server extends
       size += com.google.protobuf.CodedOutputStream
         .computeInt32Size(2, port_);
     }
-    if (!loadBalanceToken_.isEmpty()) {
-      size += com.google.protobuf.CodedOutputStream
-        .computeBytesSize(3, loadBalanceToken_);
+    if (!getLoadBalanceTokenBytes().isEmpty()) {
+      size += com.google.protobuf.GeneratedMessage.computeStringSize(3, loadBalanceToken_);
     }
     if (dropRequest_ != false) {
       size += com.google.protobuf.CodedOutputStream
@@ -297,20 +326,20 @@ public  final class Server extends
     return builder;
   }
   /**
-   * Protobuf type {@code loadbalancer_gslb.client.grpc.Server}
+   * Protobuf type {@code grpc.lb.v1.Server}
    */
   public static final class Builder extends
       com.google.protobuf.GeneratedMessage.Builder<Builder> implements
-      // @@protoc_insertion_point(builder_implements:loadbalancer_gslb.client.grpc.Server)
+      // @@protoc_insertion_point(builder_implements:grpc.lb.v1.Server)
       io.grpc.grpclb.ServerOrBuilder {
     public static final com.google.protobuf.Descriptors.Descriptor
         getDescriptor() {
-      return io.grpc.grpclb.LoadBalancerProto.internal_static_loadbalancer_gslb_client_grpc_Server_descriptor;
+      return io.grpc.grpclb.LoadBalancerProto.internal_static_grpc_lb_v1_Server_descriptor;
     }
 
     protected com.google.protobuf.GeneratedMessage.FieldAccessorTable
         internalGetFieldAccessorTable() {
-      return io.grpc.grpclb.LoadBalancerProto.internal_static_loadbalancer_gslb_client_grpc_Server_fieldAccessorTable
+      return io.grpc.grpclb.LoadBalancerProto.internal_static_grpc_lb_v1_Server_fieldAccessorTable
           .ensureFieldAccessorsInitialized(
               io.grpc.grpclb.Server.class, io.grpc.grpclb.Server.Builder.class);
     }
@@ -335,7 +364,7 @@ public  final class Server extends
 
       port_ = 0;
 
-      loadBalanceToken_ = com.google.protobuf.ByteString.EMPTY;
+      loadBalanceToken_ = "";
 
       dropRequest_ = false;
 
@@ -344,7 +373,7 @@ public  final class Server extends
 
     public com.google.protobuf.Descriptors.Descriptor
         getDescriptorForType() {
-      return io.grpc.grpclb.LoadBalancerProto.internal_static_loadbalancer_gslb_client_grpc_Server_descriptor;
+      return io.grpc.grpclb.LoadBalancerProto.internal_static_grpc_lb_v1_Server_descriptor;
     }
 
     public io.grpc.grpclb.Server getDefaultInstanceForType() {
@@ -387,8 +416,9 @@ public  final class Server extends
       if (other.getPort() != 0) {
         setPort(other.getPort());
       }
-      if (other.getLoadBalanceToken() != com.google.protobuf.ByteString.EMPTY) {
-        setLoadBalanceToken(other.getLoadBalanceToken());
+      if (!other.getLoadBalanceToken().isEmpty()) {
+        loadBalanceToken_ = other.loadBalanceToken_;
+        onChanged();
       }
       if (other.getDropRequest() != false) {
         setDropRequest(other.getDropRequest());
@@ -539,33 +569,61 @@ public  final class Server extends
       return this;
     }
 
-    private com.google.protobuf.ByteString loadBalanceToken_ = com.google.protobuf.ByteString.EMPTY;
+    private java.lang.Object loadBalanceToken_ = "";
     /**
-     * <code>optional bytes load_balance_token = 3;</code>
+     * <code>optional string load_balance_token = 3;</code>
      *
      * <pre>
      * An opaque token that is passed from the client to the server in metadata.
      * The server may expect this token to indicate that the request from the
      * client was load balanced.
-     * TODO(yetianx): Not used right now, and will be used after implementing
-     * load report.
      * </pre>
      */
-    public com.google.protobuf.ByteString getLoadBalanceToken() {
-      return loadBalanceToken_;
+    public java.lang.String getLoadBalanceToken() {
+      java.lang.Object ref = loadBalanceToken_;
+      if (!(ref instanceof java.lang.String)) {
+        com.google.protobuf.ByteString bs =
+            (com.google.protobuf.ByteString) ref;
+        java.lang.String s = bs.toStringUtf8();
+        loadBalanceToken_ = s;
+        return s;
+      } else {
+        return (java.lang.String) ref;
+      }
     }
     /**
-     * <code>optional bytes load_balance_token = 3;</code>
+     * <code>optional string load_balance_token = 3;</code>
      *
      * <pre>
      * An opaque token that is passed from the client to the server in metadata.
      * The server may expect this token to indicate that the request from the
      * client was load balanced.
-     * TODO(yetianx): Not used right now, and will be used after implementing
-     * load report.
      * </pre>
      */
-    public Builder setLoadBalanceToken(com.google.protobuf.ByteString value) {
+    public com.google.protobuf.ByteString
+        getLoadBalanceTokenBytes() {
+      java.lang.Object ref = loadBalanceToken_;
+      if (ref instanceof String) {
+        com.google.protobuf.ByteString b = 
+            com.google.protobuf.ByteString.copyFromUtf8(
+                (java.lang.String) ref);
+        loadBalanceToken_ = b;
+        return b;
+      } else {
+        return (com.google.protobuf.ByteString) ref;
+      }
+    }
+    /**
+     * <code>optional string load_balance_token = 3;</code>
+     *
+     * <pre>
+     * An opaque token that is passed from the client to the server in metadata.
+     * The server may expect this token to indicate that the request from the
+     * client was load balanced.
+     * </pre>
+     */
+    public Builder setLoadBalanceToken(
+        java.lang.String value) {
       if (value == null) {
     throw new NullPointerException();
   }
@@ -575,19 +633,37 @@ public  final class Server extends
       return this;
     }
     /**
-     * <code>optional bytes load_balance_token = 3;</code>
+     * <code>optional string load_balance_token = 3;</code>
      *
      * <pre>
      * An opaque token that is passed from the client to the server in metadata.
      * The server may expect this token to indicate that the request from the
      * client was load balanced.
-     * TODO(yetianx): Not used right now, and will be used after implementing
-     * load report.
      * </pre>
      */
     public Builder clearLoadBalanceToken() {
       
       loadBalanceToken_ = getDefaultInstance().getLoadBalanceToken();
+      onChanged();
+      return this;
+    }
+    /**
+     * <code>optional string load_balance_token = 3;</code>
+     *
+     * <pre>
+     * An opaque token that is passed from the client to the server in metadata.
+     * The server may expect this token to indicate that the request from the
+     * client was load balanced.
+     * </pre>
+     */
+    public Builder setLoadBalanceTokenBytes(
+        com.google.protobuf.ByteString value) {
+      if (value == null) {
+    throw new NullPointerException();
+  }
+  checkByteStringIsUtf8(value);
+      
+      loadBalanceToken_ = value;
       onChanged();
       return this;
     }
@@ -643,10 +719,10 @@ public  final class Server extends
     }
 
 
-    // @@protoc_insertion_point(builder_scope:loadbalancer_gslb.client.grpc.Server)
+    // @@protoc_insertion_point(builder_scope:grpc.lb.v1.Server)
   }
 
-  // @@protoc_insertion_point(class_scope:loadbalancer_gslb.client.grpc.Server)
+  // @@protoc_insertion_point(class_scope:grpc.lb.v1.Server)
   private static final io.grpc.grpclb.Server DEFAULT_INSTANCE;
   static {
     DEFAULT_INSTANCE = new io.grpc.grpclb.Server();
