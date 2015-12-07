@@ -38,6 +38,7 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
+import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
@@ -359,6 +360,39 @@ public class GrpclbLoadBalancerTest {
     assertTrue(pick1.isDone());
     assertFutureFailedWithError(pick0, Status.Code.UNAVAILABLE, "Name resolution failed");
     assertFutureFailedWithError(pick1, Status.Code.UNAVAILABLE, "Name resolution failed");
+  }
+
+  @Test public void shutdown() throws Exception {
+    // Simulate the initial set of LB addresses resolved
+    simulateLbAddressResolved(30001);
+
+    // Make the transport for LB server ready
+    ClientTransport lbTransport = mock(ClientTransport.class);
+    lbTransportFuture.set(lbTransport);
+
+    // An LB request is sent
+    assertNotNull(loadBalancer.sentLbRequests.poll(1000, TimeUnit.SECONDS));
+
+    // Simulate LB server responds a server list
+    List<ResolvedServerInfo> serverList = createResolvedServerInfoList(4000, 4001);
+    loadBalancer.getLbResponseObserver().onNext(buildLbResponse(serverList));
+    verify(mockTransportManager).getTransport(eq(lbAddressGroup));
+    assertEquals(buildRoundRobinList(serverList), loadBalancer.getRoundRobinServerList().getList());
+
+    // Shut down the LoadBalancer
+    loadBalancer.shutdown();
+
+    // Simulate a stream error
+    loadBalancer.getLbResponseObserver().onError(Status.CANCELLED.asException());
+
+    // Won't send a request
+    assertEquals(0, loadBalancer.sentLbRequests.size());
+
+    // Simulate transport closure
+    loadBalancer.transportShutdown(lbAddressGroup, lbTransport, Status.CANCELLED);
+
+    // Won't get a new transport. getTransport() was call once before.
+    verify(mockTransportManager).getTransport(any(EquivalentAddressGroup.class));
   }
 
   /**

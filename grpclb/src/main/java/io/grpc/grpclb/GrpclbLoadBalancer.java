@@ -193,6 +193,9 @@ class GrpclbLoadBalancer extends LoadBalancer {
 
   @GuardedBy("lock")
   private void startNegotiation() {
+    if (closed) {
+      return;
+    }
     Preconditions.checkState(lbTransport != null, "currentLbTransport must be available");
     logger.info("Starting LB negotiation");
     LoadBalanceRequest initRequest = LoadBalanceRequest.newBuilder()
