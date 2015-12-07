@@ -33,6 +33,7 @@ package io.grpc.grpclb;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.common.util.concurrent.ListenableFuture;
 
@@ -41,7 +42,6 @@ import io.grpc.TransportManager;
 import io.grpc.internal.ClientTransport;
 
 import java.net.InetSocketAddress;
-import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 
@@ -93,9 +93,9 @@ class RoundRobinServerList {
 
   @NotThreadSafe
   static class Builder {
-    private final List<EquivalentAddressGroup> list = new ArrayList<EquivalentAddressGroup>();
+    private final ImmutableList.Builder<EquivalentAddressGroup> listBuilder =
+        ImmutableList.builder();
     private final TransportManager tm;
-    private boolean built;
 
     Builder(TransportManager tm) {
       this.tm = tm;
@@ -105,14 +105,11 @@ class RoundRobinServerList {
      * Adds a server to the list, or {@code null} for a drop entry.
      */
     void add(@Nullable InetSocketAddress addr) {
-      Preconditions.checkState(!built, "already built");
-      list.add(new EquivalentAddressGroup(addr));
+      listBuilder.add(new EquivalentAddressGroup(addr));
     }
 
     RoundRobinServerList build() {
-      Preconditions.checkState(!built, "already built");
-      built = true;
-      return new RoundRobinServerList(tm, list);
+      return new RoundRobinServerList(tm, listBuilder.build());
     }
   }
 }
