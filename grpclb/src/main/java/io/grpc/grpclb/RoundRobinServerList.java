@@ -33,6 +33,7 @@ package io.grpc.grpclb;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
+import com.google.common.collect.Iterables;
 import com.google.common.util.concurrent.ListenableFuture;
 
 import io.grpc.EquivalentAddressGroup;
@@ -41,36 +42,36 @@ import io.grpc.internal.ClientTransport;
 
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 
 import javax.annotation.Nullable;
-import javax.annotation.concurrent.GuardedBy;
 import javax.annotation.concurrent.NotThreadSafe;
 import javax.annotation.concurrent.ThreadSafe;
 
 /**
  * Manages a list of server addresses to round-robin on.
  */
+// TODO(zhangkun83): possibly move it to io.grpc.internal, as it can also be used by the round-robin
+// LoadBalancer.
 @ThreadSafe
 class RoundRobinServerList {
   private final TransportManager tm;
   private final List<EquivalentAddressGroup> list;
-  @GuardedBy("list")
-  private int index;
+  private final Iterator<EquivalentAddressGroup> cyclingIter;
 
   private RoundRobinServerList(TransportManager tm, List<EquivalentAddressGroup> list) {
     this.tm = tm;
     this.list = list;
+    this.cyclingIter = Iterables.cycle(list).iterator();
   }
 
   ListenableFuture<ClientTransport> getTransportForNextServer() {
     EquivalentAddressGroup currentServer;
-    synchronized (list) {
-      currentServer = list.get(index);
-      index++;
-      if (index >= list.size()) {
-        index = 0;
-      }
+    synchronized (cyclingIter) {
+      // TODO(zhangkun83): receive transportShutdown and transportReady events, then skip addresses
+      // that have been failing.
+      currentServer = cyclingIter.next();
     }
     if (currentServer == null) {
       // TODO(zhangkun83): drop the request by returnning a fake transport that would fail
@@ -104,6 +105,7 @@ class RoundRobinServerList {
      * Adds a server to the list, or {@code null} for a drop entry.
      */
     void add(@Nullable InetSocketAddress addr) {
+      Preconditions.checkState(!built, "already built");
       list.add(new EquivalentAddressGroup(addr));
     }
 
