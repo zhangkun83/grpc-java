@@ -35,7 +35,6 @@ import com.google.common.util.concurrent.ListenableFuture;
 
 import io.grpc.internal.ClientTransport;
 
-import java.net.SocketAddress;
 import java.util.Collection;
 
 /**
@@ -47,7 +46,7 @@ public abstract class TransportManager {
    * Advises this {@code TransportManager} to retain transports only to these servers, for warming
    * up connections and discarding unused connections.
    */
-  public abstract void updateRetainedTransports(Collection<SocketAddress> addrs);
+  public abstract void updateRetainedTransports(Collection<EquivalentAddressGroup> addrs);
 
   /**
    * Returns the future of a transport for any of the addresses from the given address group.

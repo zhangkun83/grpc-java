@@ -33,6 +33,7 @@ package io.grpc.grpclb;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
@@ -43,7 +44,6 @@ import static org.mockito.Matchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.withSettings;
 
@@ -62,7 +62,6 @@ import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
 import java.net.InetSocketAddress;
-import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -132,7 +131,7 @@ public class GrpclbLoadBalancerTest {
     assertNotNull(loadBalancer.getLbResponseObserver());
     loadBalancer.getLbResponseObserver().onNext(buildLbResponse(serverList1));
 
-    verify(mockTransportManager).updateRetainedTransports(eq(buildSocketAddressSet(servers)));
+    verify(mockTransportManager).updateRetainedTransports(eq(buildRetainedAddressSet(servers)));
 
     assertFalse(pick0.isDone());
     assertFalse(pick1.isDone());
@@ -179,7 +178,7 @@ public class GrpclbLoadBalancerTest {
     // Simulate LB server responds a server list
     List<ResolvedServerInfo> serverList = createResolvedServerInfoList(4000, 4001);
     loadBalancer.getLbResponseObserver().onNext(buildLbResponse(serverList));
-    verify(mockTransportManager).updateRetainedTransports(eq(buildSocketAddressSet(serverList)));
+    verify(mockTransportManager).updateRetainedTransports(eq(buildRetainedAddressSet(serverList)));
 
     // The server list is in effect
     assertEquals(buildRoundRobinList(serverList), loadBalancer.getRoundRobinServerList().getList());
@@ -187,7 +186,7 @@ public class GrpclbLoadBalancerTest {
     // Simulate LB server responds another server list
     serverList = createResolvedServerInfoList(4002, 4003);
     loadBalancer.getLbResponseObserver().onNext(buildLbResponse(serverList));
-    verify(mockTransportManager).updateRetainedTransports(eq(buildSocketAddressSet(serverList)));
+    verify(mockTransportManager).updateRetainedTransports(eq(buildRetainedAddressSet(serverList)));
 
     // The new list is in effect
     assertEquals(buildRoundRobinList(serverList), loadBalancer.getRoundRobinServerList().getList());
@@ -196,6 +195,10 @@ public class GrpclbLoadBalancerTest {
   @Test public void newLbAddressesResolved() throws Exception {
     // Simulate the initial set of LB addresses resolved
     simulateLbAddressResolved(30001);
+
+    EquivalentAddressGroup lbAddress1 = lbAddressGroup;
+    verify(mockTransportManager).updateRetainedTransports(eq(Collections.singleton(lbAddress1)));
+    verify(mockTransportManager).getTransport(eq(lbAddressGroup));
 
     // Make the transport for LB server ready
     ClientTransport lbTransport = mock(ClientTransport.class);
@@ -208,6 +211,10 @@ public class GrpclbLoadBalancerTest {
 
     // Simulate a second set of LB addresses resolved
     simulateLbAddressResolved(30002);
+    EquivalentAddressGroup lbAddress2 = lbAddressGroup;
+    assertNotEquals(lbAddress1, lbAddress2);
+    verify(mockTransportManager).updateRetainedTransports(eq(Collections.singleton(lbAddress2)));
+    verify(mockTransportManager).getTransport(eq(lbAddressGroup));
     lbTransport = mock(ClientTransport.class);
     lbTransportFuture.set(lbTransport);
 
@@ -218,9 +225,11 @@ public class GrpclbLoadBalancerTest {
 
     // Simulate that an identical set of LB addresses is resolved
     simulateLbAddressResolved(30002);
+    EquivalentAddressGroup lbAddress3 = lbAddressGroup;
+    verify(mockTransportManager).getTransport(eq(lbAddressGroup));
 
-    // Nothing will happen
-    verifyNoMoreInteractions(mockTransportManager);
+    // Only when LB address changes, getTransport is called.
+    verify(mockTransportManager, times(2)).getTransport(any(EquivalentAddressGroup.class));
   }
 
   @Test public void lbStreamErrorAfterResponse() throws Exception {
@@ -409,6 +418,16 @@ public class GrpclbLoadBalancerTest {
     verify(mockTransportManager).getTransport(eq(lbAddressGroup));
   }
 
+  private HashSet<EquivalentAddressGroup> buildRetainedAddressSet(
+      Collection<ResolvedServerInfo> serverInfos) {
+    HashSet<EquivalentAddressGroup> addrs = new HashSet<EquivalentAddressGroup>();
+    for (ResolvedServerInfo serverInfo : serverInfos) {
+      addrs.add(new EquivalentAddressGroup(serverInfo.getAddress()));
+    }
+    addrs.add(lbAddressGroup);
+    return addrs;
+  }
+
   /**
    * A slightly modified {@link GrpclbLoadBalancerTest} that saves LB requests in a queue instead of
    * sending them out.
@@ -461,15 +480,6 @@ public class GrpclbLoadBalancerTest {
       roundRobinList.add(new EquivalentAddressGroup(serverInfo.getAddress()));
     }
     return roundRobinList;
-  }
-
-  private static HashSet<SocketAddress> buildSocketAddressSet(
-      Collection<ResolvedServerInfo> serverInfos) {
-    HashSet<SocketAddress> addrs = new HashSet<SocketAddress>();
-    for (ResolvedServerInfo serverInfo : serverInfos) {
-      addrs.add(serverInfo.getAddress());
-    }
-    return addrs;
   }
 
   private static List<ResolvedServerInfo> createResolvedServerInfoList(int ... ports) {

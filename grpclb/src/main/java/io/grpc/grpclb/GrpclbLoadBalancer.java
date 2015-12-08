@@ -59,6 +59,7 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
@@ -159,6 +160,7 @@ class GrpclbLoadBalancer extends LoadBalancer {
         connectToLb();
       }
     }
+    updateRetainedTransports();
   }
 
   @GuardedBy("lock")
@@ -258,14 +260,29 @@ class GrpclbLoadBalancer extends LoadBalancer {
     pendingPicksFulfillmentBatch.fail(statusException);
   }
 
+  private void updateRetainedTransports() {
+    HashSet<EquivalentAddressGroup> addresses = new HashSet<EquivalentAddressGroup>();
+    synchronized (lock) {
+      if (lbAddresses != null) {
+        addresses.add(lbAddresses);
+      }
+      if (servers != null) {
+        for (SocketAddress addr : servers.keySet()) {
+          addresses.add(new EquivalentAddressGroup(addr));
+        }
+      }
+    }
+    tm.updateRetainedTransports(addresses);
+  }
+
   private class LbResponseObserver implements StreamObserver<LoadBalanceResponse> {
     @Override public void onNext(LoadBalanceResponse response) {
       logger.info("Got a LB response: " + response);
       FulfillmentBatch<ClientTransport> pendingPicksFulfillmentBatch;
       final RoundRobinServerList newRoundRobinServerList;
-      HashMap<SocketAddress, ResolvedServerInfo> newServerMap =
-          new HashMap<SocketAddress, ResolvedServerInfo>();
       synchronized (lock) {
+        HashMap<SocketAddress, ResolvedServerInfo> newServerMap =
+            new HashMap<SocketAddress, ResolvedServerInfo>();
         InitialLoadBalanceResponse initialResponse = response.getInitialResponse();
         // TODO(zhangkun83): make use of initialResponse
         RoundRobinServerList.Builder listBuilder = new RoundRobinServerList.Builder(tm);
@@ -293,7 +310,7 @@ class GrpclbLoadBalancer extends LoadBalancer {
         servers = newServerMap;
         pendingPicksFulfillmentBatch = pendingPicks.createFulfillmentBatch();
       }
-      tm.updateRetainedTransports(newServerMap.keySet());
+      updateRetainedTransports();
       pendingPicksFulfillmentBatch.link(
           new Supplier<ListenableFuture<ClientTransport>>() {
             @Override

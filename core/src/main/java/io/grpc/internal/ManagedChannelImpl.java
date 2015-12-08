@@ -58,7 +58,6 @@ import io.grpc.Status;
 import io.grpc.TransportManager;
 import io.grpc.internal.ClientCallImpl.ClientTransportProvider;
 
-import java.net.SocketAddress;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
@@ -356,7 +355,7 @@ public final class ManagedChannelImpl extends ManagedChannel {
 
   private final TransportManager tm = new TransportManager() {
     @Override
-    public void updateRetainedTransports(Collection<SocketAddress> addrs) {
+    public void updateRetainedTransports(Collection<EquivalentAddressGroup> addrs) {
       // TODO(zhangkun83): warm-up new servers and discard removed servers.
     }
 
