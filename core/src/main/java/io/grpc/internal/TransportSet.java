@@ -107,7 +107,7 @@ final class TransportSet {
   /*
    * The transport for new outgoing requests.
    * - If shutdown == true, activeTransport is null (shutdown)
-   * - Otherwise, a connection is pending or connecting, 
+   * - Otherwise, if a connection is pending or connecting,
    *   activeTransport is a DelayedClientTransport
    * - Otherwise, activeTransport is either null (initially or when idle)
    *   or points to a real transport (when ready).
@@ -307,7 +307,7 @@ final class TransportSet {
         savedShutdown = shutdown;
         firstAttempt = true;
         if (shutdown) {
-          // If TransportSet already shutdown, newActiveTransport is only to take care of pending
+          // If TransportSet already shutdown, transport is only to take care of pending
           // streams in delayedTransport, but will not serve new streams, and it will be shutdown
           // as soon as it's set to the delayedTransport.
           // activeTransport should have already been set to null by shutdown(). We keep it null.
