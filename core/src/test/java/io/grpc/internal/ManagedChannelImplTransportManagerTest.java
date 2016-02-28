@@ -199,8 +199,10 @@ public class ManagedChannelImplTransportManagerTest {
     verify(mockBackoffPolicyProvider, times(backoffReset)).get();
     verify(mockTransportFactory).newClientTransport(addr2, authority);
     ClientTransport t2b = tm.getTransport(addressGroup);
+    // Because connection never succeeded, and we have not exhausted the addresses,
+    // we get the same DelayedTransport instance.
     assertSame(t2a, t2b);
-    assertNotSame(t1, t2a);
+    assertSame(t1, t2a);
     // Make the second transport ready
     transports.peek().listener.transportReady();
     // Disconnect the second transport
@@ -210,7 +212,6 @@ public class ManagedChannelImplTransportManagerTest {
     // out of addresses.
     ClientTransport t3 = tm.getTransport(addressGroup);
     assertNotSame(t1, t3);
-    assertNotSame(t2a, t3);
     // This time back-off policy was reset, because previous transport was succesfully connected.
     verify(mockBackoffPolicyProvider, times(++backoffReset)).get();
     // Back-off policy was never consulted.

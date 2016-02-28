@@ -297,11 +297,15 @@ public class TransportSetTest {
     // Reconnect will eventually happen, even though TransportSet has been shut down
     fakeClock.forwardMillis(10);
     verify(mockTransportFactory, times(2)).newClientTransport(addr, authority);
-    // The pending stream will be started on this newly started transport, which is promptly shut
-    // down by TransportSet right after the stream is created.
+    // The pending stream will be started on this newly started transport after it's ready.
+    // The transport is shut down by TransportSet right after the stream is created.
     transportInfo = transports.poll();
+    verify(transportInfo.transport, times(0)).newStream(same(method), same(headers));
+    verify(transportInfo.transport, times(0)).shutdown();
+    transportInfo.listener.transportReady();
     verify(transportInfo.transport).newStream(same(method), same(headers));
     verify(transportInfo.transport).shutdown();
+    transportInfo.listener.transportShutdown(Status.UNAVAILABLE);
     verify(mockTransportSetCallback, never()).onTerminated();
     // Terminating the transport will let TransportSet to be terminated.
     transportInfo.listener.transportTerminated();
