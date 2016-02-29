@@ -329,8 +329,8 @@ final class TransportSet {
 
     @Override
     public void transportShutdown(Status s) {
-      log.log(Level.FINE, "Transport {0} for {1} is being shutdown",
-          new Object[] {transport, address});
+      log.log(Level.FINE, "Transport {0} for {1} is being shutdown with {2}",
+          new Object[] {transport, address, s});
       super.transportShutdown(s);
       synchronized (lock) {
         if (activeTransport == transport) {
