@@ -108,8 +108,8 @@ public class CallOptionsTest {
     long deadline = CallOptions.DEFAULT
         .withDeadlineAfter(1, TimeUnit.MINUTES).getDeadlineNanoTime();
     long expected = System.nanoTime() + 1L * 60 * 1000 * 1000 * 1000;
-    // 10 milliseconds of leeway
-    long epsilon = 1000 * 1000 * 10;
+    // 100 milliseconds of leeway
+    long epsilon = 1000 * 1000 * 100;
 
     assertEquals(expected, deadline, epsilon);
   }
