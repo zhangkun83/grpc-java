@@ -295,54 +295,63 @@ final class TransportSet {
 
     @Override
     public void transportReady() {
-      log.log(Level.FINE, "Transport {0} for {1} is ready", new Object[] {transport, address});
       super.transportReady();
-      boolean savedShutdown;
-      synchronized (lock) {
-        savedShutdown = shutdown;
-        firstAttempt = true;
-        if (shutdown) {
-          // If TransportSet already shutdown, transport is only to take care of pending
-          // streams in delayedTransport, but will not serve new streams, and it will be shutdown
-          // as soon as it's set to the delayedTransport.
-          // activeTransport should have already been set to null by shutdown(). We keep it null.
-          Preconditions.checkState(activeTransport == null,
-              "Unexpected non-null activeTransport");
-        } else if (activeTransport == delayedTransport) {
-          activeTransport = transport;
-        }
-      }
-      delayedTransport.setTransport(transport);
-      // This delayed transport will terminate and be removed from transports.
-      delayedTransport.shutdown();
-      if (savedShutdown) {
-        // See comments in the synchronized block above on why we shutdown here.
-        transport.shutdown();
-      }
-      loadBalancer.handleTransportReady(addressGroup);
+      scheduledExecutor.execute(new Runnable() {
+          @Override public void run() {
+            log.log(Level.FINE, "Transport {0} for {1} is ready",
+                new Object[] {transport, address});
+            boolean savedShutdown;
+            synchronized (lock) {
+              savedShutdown = shutdown;
+              firstAttempt = true;
+              if (shutdown) {
+                // If TransportSet already shutdown, transport is only to take care of pending
+                // streams in delayedTransport, but will not serve new streams, and it will be
+                // shutdown as soon as it's set to the delayedTransport.  activeTransport should
+                // have already been set to null by shutdown(). We keep it null.
+                Preconditions.checkState(activeTransport == null,
+                                         "Unexpected non-null activeTransport");
+              } else if (activeTransport == delayedTransport) {
+                activeTransport = transport;
+              }
+            }
+            delayedTransport.setTransport(transport);
+            // This delayed transport will terminate and be removed from transports.
+            delayedTransport.shutdown();
+            if (savedShutdown) {
+              // See comments in the synchronized block above on why we shutdown here.
+              transport.shutdown();
+            }
+            loadBalancer.handleTransportReady(addressGroup);
+          }
+        });
     }
 
     @Override
-    public void transportShutdown(Status s) {
-      log.log(Level.FINE, "Transport {0} for {1} is being shutdown with {2}",
-          new Object[] {transport, address, s});
+    public void transportShutdown(final Status s) {
       super.transportShutdown(s);
-      synchronized (lock) {
-        if (activeTransport == transport) {
-          activeTransport = null;
-        } else if (activeTransport == delayedTransport) {
-          // Continue reconnect if there are still addresses to try.
-          // Fail if all addresses have been tried and failed in a row.
-          if (nextAddressIndex == 0) {
-            delayedTransport.setTransport(new FailingClientTransport(s));
-            delayedTransport.shutdown();
-            activeTransport = null;
-          } else {
-            scheduleConnection(delayedTransport);
+      scheduledExecutor.execute(new Runnable() {
+          @Override public void run() {
+            log.log(Level.FINE, "Transport {0} for {1} is being shutdown with {2}",
+                    new Object[] {transport, address, s});
+            synchronized (lock) {
+              if (activeTransport == transport) {
+                activeTransport = null;
+              } else if (activeTransport == delayedTransport) {
+                // Continue reconnect if there are still addresses to try.
+                // Fail if all addresses have been tried and failed in a row.
+                if (nextAddressIndex == 0) {
+                  delayedTransport.setTransport(new FailingClientTransport(s));
+                  delayedTransport.shutdown();
+                  activeTransport = null;
+                } else {
+                  scheduleConnection(delayedTransport);
+                }
+              }
+            }
+            loadBalancer.handleTransportShutdown(addressGroup, s);
           }
-        }
-      }
-      loadBalancer.handleTransportShutdown(addressGroup, s);
+        });
     }
 
     @Override
