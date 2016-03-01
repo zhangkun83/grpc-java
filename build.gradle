@@ -279,6 +279,9 @@ subprojects {
             showExceptions true
             showCauses true
             showStackTraces true
+            maxGranularity 3
+            minGranularity 3
+            events = ["started", "failed", "passed"]
         }
         maxHeapSize = '1500m'
     }
