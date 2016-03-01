@@ -283,6 +283,6 @@ subprojects {
             minGranularity 3
             events = ["started", "failed", "passed"]
         }
-        maxHeapSize = '1500m'
+        maxHeapSize = '2000m'
     }
 }
