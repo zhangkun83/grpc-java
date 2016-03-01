@@ -281,7 +281,8 @@ subprojects {
             showStackTraces true
             maxGranularity 3
             minGranularity 3
-            events = ["started", "failed", "passed"]
+            events = ["started", "failed", "passed", "standard_error"]
+            jvmArgs "-verbose:gc"
         }
         maxHeapSize = '2000m'
     }
