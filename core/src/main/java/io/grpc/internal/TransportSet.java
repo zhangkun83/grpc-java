@@ -186,6 +186,7 @@ final class TransportSet {
       @Override
       public void run() {
         synchronized (lock) {
+          reconnectTask = null;
           if (currentAddressIndex == 0) {
             backoffWatch.reset().start();
           }
@@ -210,14 +211,8 @@ final class TransportSet {
       }
     }
     firstAttempt = false;
-    if (delayMillis <= 0) {
-      reconnectTask = null;
-      // No back-off this time.
-      createTransportRunnable.run();
-    } else {
-      reconnectTask = scheduledExecutor.schedule(
-          createTransportRunnable, delayMillis, TimeUnit.MILLISECONDS);
-    }
+    reconnectTask = scheduledExecutor.schedule(
+        createTransportRunnable, delayMillis, TimeUnit.MILLISECONDS);
   }
 
   /**
