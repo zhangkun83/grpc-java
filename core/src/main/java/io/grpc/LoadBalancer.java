@@ -88,11 +88,13 @@ public abstract class LoadBalancer<T> {
   /**
    * Called when a transport is fully connected and ready to accept traffic.
    */
+  @Deprecated
   public void handleTransportReady(EquivalentAddressGroup addressGroup) { }
 
   /**
    * Called when a transport is shutting down.
    */
+  @Deprecated
   public void handleTransportShutdown(EquivalentAddressGroup addressGroup, Status s) { }
 
   public abstract static class Factory {

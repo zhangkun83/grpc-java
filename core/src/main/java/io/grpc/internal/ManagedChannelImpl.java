@@ -56,6 +56,7 @@ import io.grpc.ResolvedServerInfoGroup;
 import io.grpc.Status;
 import io.grpc.TransportManager;
 import io.grpc.TransportManager.InterimTransport;
+import io.grpc.TransportManager.OobTransportProvider;
 import io.grpc.internal.ClientCallImpl.ClientTransportProvider;
 
 import java.net.URI;
@@ -140,10 +141,17 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
   /**
    * Maps EquivalentAddressGroups to transports for that server. "lock" must be held when mutating.
    */
+  // TODO(zhangkun83): delete this after deleting TransportManager.getTransport()
   // Even though we set a concurrency level of 1, this is better than Collections.synchronizedMap
   // because it doesn't need to acquire a lock for reads.
   private final ConcurrentMap<EquivalentAddressGroup, TransportSet> transports =
       new ConcurrentHashMap<EquivalentAddressGroup, TransportSet>(16, .75f, 1);
+
+  /**
+   * Keeps track of the TransportSets that are created from TransportManager.createStubChannel().
+   */
+  @GuardedBy("lock")
+  private final HashSet<TransportSet> transportSets = new HashSet<TransportSet>();
 
   /**
    * TransportSets that are shutdown (but not yet terminated) due to channel idleness or channel
@@ -669,6 +677,16 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
         EquivalentAddressGroup addressGroup, String authority) {
       return new OobTransportProviderImpl(addressGroup, authority);
     }
+
+    @Override
+    public abstract SubChannel<T> createSubChannel(EquivalentAddressGroup addressGroup) {
+      
+    }
+
+    @Override
+    public ManagedChannel createOobChannel(
+        EquivalentAddressGroup addressGroup, String authority) {
+    }
   };
 
   @Override
@@ -759,14 +777,11 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
     }
   }
 
-  @SuppressWarnings("deprecated")
-  private class OobChannelImpl extends ManagedChannel
-      implements TransportManager.OobTransportProvider<ClientTransport> {
+  private class OobTransportProviderImpl implements OobTransportProvider<ClientTransport> {
     private final TransportSet transportSet;
     private final ClientTransport transport;
-    private final SingleTransportChannel delegate;
 
-    OobChannelImpl(EquivalentAddressGroup addressGroup, String authority) {
+    OobTransportProviderImpl(EquivalentAddressGroup addressGroup, String authority) {
       synchronized (lock) {
         if (shutdown) {
           transportSet = null;
@@ -790,8 +805,6 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
           oobTransports.add(this);
         }
       }
-      delegate = new SingleTransportChannel(
-          transport, executor, deadlineCancellationExecutor, authority);
     }
 
     @Override

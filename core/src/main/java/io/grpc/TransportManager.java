@@ -44,6 +44,7 @@ public abstract class TransportManager<T> {
    * Advises this {@code TransportManager} to retain transports only to these servers, for warming
    * up connections and discarding unused connections.
    */
+  @Deprecated
   public abstract void updateRetainedTransports(Collection<EquivalentAddressGroup> addrs);
 
   /**
@@ -57,11 +58,10 @@ public abstract class TransportManager<T> {
   public abstract T getTransport(EquivalentAddressGroup addressGroup);
 
   /**
-   * Returns a {@link InBandChannel} for the given address group.
-   *
-   * <p>Never returns {@code null}
+   * Creates a {@link SubChannel} for the given address group.  It's the caller's responsibility
+   * to shut it down when no longer used.
    */
-  public abstract InBandChannel<T> getChannel(EquivalentAddressGroup addressGroup);
+  public abstract SubChannel<T> createSubChannel(EquivalentAddressGroup addressGroup);
 
   /**
    * Creates a channel for out-of-band communications, usually used by a load-balancer that needs to
@@ -110,9 +110,9 @@ public abstract class TransportManager<T> {
   public abstract Channel makeChannel(T transport);
 
   /**
-   * An logical channel that represents the connectivity for an address group.
+   * A subchannel that manages the transports for a {@link EquivalentAddressGroup}.
    */
-  public abstract class InBandChannel<T> extends StatefulChannel {
+  public abstract class SubChannel<T> extends ManagedChannel {
     /**
      * Returns a usable transport.
      */
