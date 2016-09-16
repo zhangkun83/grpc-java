@@ -59,11 +59,12 @@ import javax.annotation.concurrent.ThreadSafe;
  * Transports for a single {@link SocketAddress}.
  */
 @ThreadSafe
-final class TransportSet implements WithLogId {
+final class TransportSet extends ManagedChannel implements WithLogId {
   private static final Logger log = Logger.getLogger(TransportSet.class.getName());
   private static final ClientTransport SHUTDOWN_TRANSPORT =
       new FailingClientTransport(Status.UNAVAILABLE.withDescription("TransportSet is shutdown"));
 
+  private final CountDownLatch terminatedLatch = new CountDownLatch(1);
   private final Object lock = new Object();
   private final EquivalentAddressGroup addressGroup;
   private final String authority;
@@ -148,6 +149,9 @@ final class TransportSet implements WithLogId {
   @Nullable
   private volatile ManagedClientTransport activeTransport;
 
+  @GuardedBy("lock")
+  private State state = State.IDLE;
+
   TransportSet(EquivalentAddressGroup addressGroup, String authority, String userAgent,
       LoadBalancer<ClientTransport> loadBalancer, BackoffPolicy.Provider backoffPolicyProvider,
       ClientTransportFactory transportFactory, ScheduledExecutorService scheduledExecutor,
@@ -184,7 +188,7 @@ final class TransportSet implements WithLogId {
       if (shutdown) {
         return SHUTDOWN_TRANSPORT;
       }
-      // Transition to CONNECTING
+      state = State.CONNECTING;
       DelayedClientTransport delayedTransport = new DelayedClientTransport(appExecutor);
       transports.add(delayedTransport);
       delayedTransport.start(new BaseTransportListener(delayedTransport));
@@ -257,10 +261,12 @@ final class TransportSet implements WithLogId {
           synchronized (lock) {
             reconnectTask = null;
             if (hasPendingStreams) {
-              // Transition directly to CONNECTING
+              state = State.CONNECTING;
               runnable = startNewTransport(delayedTransport);
             } else {
-              // Transition to IDLE (or already SHUTDOWN)
+              if (!shutdown) {
+                state = State.IDLE;
+              }
               activeTransport = null;
               shutdownDelayedTransport = true;
             }
@@ -299,12 +305,8 @@ final class TransportSet implements WithLogId {
     };
   }
 
-  /**
-   * Shut down all transports, stop creating new streams, but existing streams will continue.
-   *
-   * <p>May run callback inline.
-   */
-  final void shutdown() {
+  @Override
+  public ManagedChannel shutdown() {
     ManagedClientTransport savedActiveTransport;
     ConnectionClientTransport savedPendingTransport;
     boolean runCallback = false;
@@ -312,13 +314,17 @@ final class TransportSet implements WithLogId {
       if (shutdown) {
         return;
       }
-      // Transition to SHUTDOWN
+      state = State.SHUTDOWN;
       shutdown = true;
       savedActiveTransport = activeTransport;
       savedPendingTransport = pendingTransport;
       activeTransport = null;
       if (transports.isEmpty()) {
         runCallback = true;
+        terminatedLatch.countDown();
+        if (log.isLoggable(Level.FINE)) {
+          log.log(Level.FINE, "[{0}] Terminated in shutdown()", getLogId());
+        }
         Preconditions.checkState(reconnectTask == null, "Should have no reconnectTask scheduled");
       }  // else: the callback will be run once all transports have been terminated
     }
@@ -384,8 +390,9 @@ final class TransportSet implements WithLogId {
         transports.remove(transport);
         if (shutdown && transports.isEmpty()) {
           if (log.isLoggable(Level.FINE)) {
-            log.log(Level.FINE, "[{0}] Terminated", getLogId());
+            log.log(Level.FINE, "[{0}] Terminated in transportTerminated()", getLogId());
           }
+          terminatedLatch.countDown();
           runCallback = true;
           cancelReconnectTask();
         }
@@ -457,7 +464,7 @@ final class TransportSet implements WithLogId {
       synchronized (lock) {
         if (activeTransport == transport) {
           // This is true only if the transport was ready.
-          // Transition to IDLE
+          state = State.IDLE;
           activeTransport = null;
           closedByServer = !shutdown;
         } else if (activeTransport == delayedTransport) {
@@ -465,10 +472,11 @@ final class TransportSet implements WithLogId {
           if (nextAddressIndex == 0) {
             allAddressesFailed = true;
             // Initiate backoff
-            // Transition to TRANSIENT_FAILURE
+            state = State.TRANSIENT_FAILURE;
             runnable = scheduleBackoff(delayedTransport, s);
           } else {
-            // Still CONNECTING
+            Preconditions.checkState(state == State.CONNECTING,
+                "Expected state is CONNECTING, actual state is %s", state);
             runnable = startNewTransport(delayedTransport);
           }
         }
@@ -526,5 +534,50 @@ final class TransportSet implements WithLogId {
      * in use. This method is called under a lock thus externally synchronized.
      */
     public void onNotInUse(TransportSet ts) { }
+  }
+
+  @Override
+  public final <RequestT, ResponseT> ClientCall<RequestT, ResponseT> newCall(
+      MethodDescriptor<RequestT, ResponseT> methodDescriptor, CallOptions callOptions) {
+    return new ClientCallImpl<RequestT, ResponseT>(methodDescriptor,
+        new SerializingExecutor(appExecutor), callOptions,
+        new ClientTransportProvider() {
+          @Override
+          public ClientTransport get(CallOptions callOptions) {
+            return obtainActiveTransport();
+          }
+        },
+        scheduledExecutor);
+  }
+
+  @Override
+  public boolean isShutdown() {
+    synchronized (lock) {
+      return shutdown;
+    }
+  }
+
+  @Override
+  public boolean isTerminated() {
+    return terminatedLatch.getCount() == 0;
+  }
+
+  @Override
+  public ManagedChannel shutdownNow() {
+    shutdownNow(Status.UNAVAILABLE.withDescription("TransportSet shutdown as ManagedChannel"));
+  }
+
+  @Override
+  public boolean awaitTermination(long timeout, TimeUnit unit) throws InterruptedException {
+    return terminatedLatch.await(timeout, unit);
+  }
+
+  @Override
+  public State getState() {
+  }
+
+  @Override
+  public void notifyWhenChanged(
+      Runnable callback, Executor executor, State source, boolean connect) {
   }
 }

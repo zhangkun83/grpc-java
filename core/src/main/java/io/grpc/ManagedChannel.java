@@ -36,7 +36,7 @@ import java.util.concurrent.TimeUnit;
 /**
  * A {@link Channel} that provides lifecycle management.
  */
-public abstract class ManagedChannel extends Channel {
+public abstract class ManagedChannel extends StatefulChannel {
   /**
    * Initiates an orderly shutdown in which preexisting calls continue but new calls are immediately
    * cancelled.
@@ -73,4 +73,10 @@ public abstract class ManagedChannel extends Channel {
    * @return whether the channel is terminated, as would be done by {@link #isTerminated()}.
    */
   public abstract boolean awaitTermination(long timeout, TimeUnit unit) throws InterruptedException;
+
+  @Override
+  public void notifyWhenChanged(
+      Runnable callback, Executor executor, State source, boolean connect) {
+    throw new UnsupportedOperationException(getClass() + " has not implemented notifyWhenChanged");
+  }
 }
