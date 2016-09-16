@@ -56,7 +56,6 @@ import io.grpc.ResolvedServerInfoGroup;
 import io.grpc.Status;
 import io.grpc.TransportManager;
 import io.grpc.TransportManager.InterimTransport;
-import io.grpc.TransportManager.OobTransportProvider;
 import io.grpc.internal.ClientCallImpl.ClientTransportProvider;
 
 import java.net.URI;
@@ -760,11 +759,14 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
     }
   }
 
-  private class OobTransportProviderImpl implements OobTransportProvider<ClientTransport> {
+  @SuppressWarnings("deprecated")
+  private class OobChannelImpl extends ManagedChannel
+      implements TransportManager.OobTransportProvider<ClientTransport> {
     private final TransportSet transportSet;
     private final ClientTransport transport;
+    private final SingleTransportChannel delegate;
 
-    OobTransportProviderImpl(EquivalentAddressGroup addressGroup, String authority) {
+    OobChannelImpl(EquivalentAddressGroup addressGroup, String authority) {
       synchronized (lock) {
         if (shutdown) {
           transportSet = null;
@@ -788,6 +790,8 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
           oobTransports.add(this);
         }
       }
+      delegate = new SingleTransportChannel(
+          transport, executor, deadlineCancellationExecutor, authority);
     }
 
     @Override

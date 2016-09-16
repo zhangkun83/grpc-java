@@ -50,8 +50,29 @@ public abstract class TransportManager<T> {
    * Returns a transport for any of the addresses from the given address group.
    *
    * <p>Never returns {@code null}
+   *
+   * @deprecated use {@link #getChannel} instead
    */
+  @Deprecated
   public abstract T getTransport(EquivalentAddressGroup addressGroup);
+
+  /**
+   * Returns a {@link InBandChannel} for the given address group.
+   *
+   * <p>Never returns {@code null}
+   */
+  public abstract InBandChannel<T> getChannel(EquivalentAddressGroup addressGroup);
+
+  /**
+   * Creates a channel for out-of-band communications, usually used by a load-balancer that needs to
+   * communicate with an external load-balancing service which is under an authority different from
+   * what the channel is associated with.
+   *
+   * <p>LoadBalancer is responsible for shutting down the returned channel once it's no longer
+   * needed.
+   */
+  public abstract ManagedChannel createOobChannel(
+      EquivalentAddressGroup addressGroup, String authority);
 
   /**
    * Creates a transport that would fail all RPCs with the given error.
@@ -73,14 +94,27 @@ public abstract class TransportManager<T> {
 
   /**
    * Creates an {@link OobTransportProvider} with a specific authority.
+   *
+   * @deprecated use {@link #createOobChannel} instead
    */
+  @Deprecated
   public abstract OobTransportProvider<T> createOobTransportProvider(
       EquivalentAddressGroup addressGroup, String authority);
 
   /**
    * Returns a channel that uses {@code transport}; useful for issuing RPCs on a transport.
+   *
+   * @deprecated use either {@link #getChannel} or {@link #createOobChannel}
    */
+  @Deprecated
   public abstract Channel makeChannel(T transport);
+
+  public abstract class InBandChannel<T> extends StatefulChannel {
+    /**
+     * Returns a usable transport.
+     */
+    public abstract T getTransport();
+  }
 
   /**
    * A transport provided as a temporary holder of new requests, which will be eventually
@@ -115,6 +149,7 @@ public abstract class TransportManager<T> {
    * communicate with an external load-balancing service which is under an authority different from
    * what the channel is associated with.
    */
+  @Deprecated
   public interface OobTransportProvider<T> {
     /**
      * Returns an OOB transport.
