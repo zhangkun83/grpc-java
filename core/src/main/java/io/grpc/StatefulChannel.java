@@ -102,6 +102,6 @@ public abstract class StatefulChannel extends Channel {
    * @param source typically what has just been returned by {@link #getState}
    * @param connect if {@code true} and the channel is IDLE, this makes a transition to CONNECTING
    */
-  public abstract void notifyWhenChanged(
+  public abstract void notifyWhenStateChanged(
       Runnable callback, Executor executor, State source, boolean connect);
 }

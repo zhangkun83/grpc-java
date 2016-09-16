@@ -109,6 +109,9 @@ public abstract class TransportManager<T> {
   @Deprecated
   public abstract Channel makeChannel(T transport);
 
+  /**
+   * An logical channel that represents the connectivity for an address group.
+   */
   public abstract class InBandChannel<T> extends StatefulChannel {
     /**
      * Returns a usable transport.
