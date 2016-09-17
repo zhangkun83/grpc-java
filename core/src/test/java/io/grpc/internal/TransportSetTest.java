@@ -472,65 +472,24 @@ public class TransportSetTest {
     transports.poll().listener.transportShutdown(Status.UNAVAILABLE);
     assertEquals(ConnectivityState.TRANSIENT_FAILURE, transportSet.getState());
 
-    // Won't reconnect until requested, even if back-off time has expired
+    // Will always reconnect after back-off
     fakeClock.forwardMillis(10);
-    assertEquals(ConnectivityState.IDLE, transportSet.getState());
-    verify(mockTransportFactory, times(transportsCreated))
-        .newClientTransport(addr, authority, userAgent);
-
-    // Once requested, will reconnect
-    transportSet.obtainActiveTransport().newStream(method, new Metadata());
     assertEquals(ConnectivityState.CONNECTING, transportSet.getState());
     verify(mockTransportFactory, times(++transportsCreated))
         .newClientTransport(addr, authority, userAgent);
 
-    // Fail this one, too
+    // Make this one proceed
+    transports.peek().listener.transportReady();
+    assertEquals(ConnectivityState.READY, transportSet.getState());
+    // Then go-away
     transports.poll().listener.transportShutdown(Status.UNAVAILABLE);
-    assertEquals(ConnectivityState.TRANSIENT_FAILURE, transportSet.getState());
+    assertEquals(ConnectivityState.IDLE, transportSet.getState());
 
-    // Request immediately, but will wait for back-off before reconnecting
+    // Request immediately
     transportSet.obtainActiveTransport().newStream(method, new Metadata(), waitForReadyCallOptions);
-    assertEquals(ConnectivityState.TRANSIENT_FAILURE, transportSet.getState());
-    verify(mockTransportFactory, times(transportsCreated))
-        .newClientTransport(addr, authority, userAgent);
-    fakeClock.forwardMillis(100);
     assertEquals(ConnectivityState.CONNECTING, transportSet.getState());
     verify(mockTransportFactory, times(++transportsCreated))
         .newClientTransport(addr, authority, userAgent);
-    fakeExecutor.runDueTasks(); // Drain new 'real' stream creation; not important to this test.
-  }
-
-  @Test
-  public void raceTransientFailureAndNewStream() {
-    SocketAddress addr = mock(SocketAddress.class);
-    createTransportSet(addr);
-
-    // Invocation counters
-    int transportsCreated = 0;
-
-    // Trigger TRANSIENT_FAILURE
-    transportSet.obtainActiveTransport().newStream(method, new Metadata());
-    verify(mockTransportFactory, times(++transportsCreated))
-        .newClientTransport(addr, authority, userAgent);
-    transports.poll().listener.transportShutdown(Status.UNAVAILABLE);
-    assertEquals(ConnectivityState.TRANSIENT_FAILURE, transportSet.getState());
-
-    // Won't reconnect without any active streams
-    ClientTransport transientFailureTransport = transportSet.obtainActiveTransport();
-    assertTrue(transientFailureTransport instanceof DelayedClientTransport);
-    transientFailureTransport.newStream(method, new Metadata()).cancel(Status.CANCELLED);
-    assertEquals(ConnectivityState.TRANSIENT_FAILURE, transportSet.getState());
-    fakeClock.forwardMillis(10);
-    assertEquals(ConnectivityState.IDLE, transportSet.getState());
-    verify(mockTransportFactory, times(transportsCreated))
-        .newClientTransport(addr, authority, userAgent);
-
-    // Lose race (long delay between obtainActiveTransport and newStream); will now reconnect
-    transientFailureTransport.newStream(method, new Metadata());
-    assertEquals(ConnectivityState.CONNECTING, transportSet.getState());
-    verify(mockTransportFactory, times(++transportsCreated))
-        .newClientTransport(addr, authority, userAgent);
-
     fakeExecutor.runDueTasks(); // Drain new 'real' stream creation; not important to this test.
   }
 
