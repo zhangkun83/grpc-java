@@ -36,6 +36,7 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.anyString;
 import static org.mockito.Matchers.same;
@@ -174,6 +175,7 @@ public class ManagedChannelImplTransportManagerTest {
 
     // createSubchannel() always creates a new Subchannel, even for the same address
     Subchannel<ClientTransport> subchannel2 = tm.createSubchannel(addressGroup);
+    subchannel2.getState(true);
     verify(mockTransportFactory, timeout(1000).times(2))
         .newClientTransport(addr, authority, userAgent);
     MockClientTransportInfo transportInfo2 = transports.poll(1, TimeUnit.SECONDS);
@@ -356,10 +358,12 @@ public class ManagedChannelImplTransportManagerTest {
     String oobAuthority = "oobauthority";
 
     ManagedChannel p1 = tm.createOobChannel(addressGroup, oobAuthority);
+    p1.getState(true);
     verify(mockTransportFactory, timeout(1000)).newClientTransport(addr, oobAuthority, userAgent);
     MockClientTransportInfo transportInfo1 = transports.poll(1, TimeUnit.SECONDS);
 
     ManagedChannel p2 = tm.createOobChannel(addressGroup, oobAuthority);
+    p2.getState(true);
     assertNotSame(p1, p2);
     verify(mockTransportFactory, timeout(1000).times(2))
         .newClientTransport(addr, oobAuthority, userAgent);
@@ -374,8 +378,12 @@ public class ManagedChannelImplTransportManagerTest {
     channel.shutdown();
     verify(transportInfo2.transport).shutdown();
 
-    ManagedChannel p3 = tm.createOobChannel(addressGroup, oobAuthority);
-    assertTrue(p3 instanceof ManagedChannelImpl.ErroringSubChannel);
+    try {
+      ManagedChannel p3 = tm.createOobChannel(addressGroup, oobAuthority);
+      fail("Should have thrown");
+    } catch (IllegalStateException e) {
+      // Expected
+    }
 
     p2.shutdown();
 

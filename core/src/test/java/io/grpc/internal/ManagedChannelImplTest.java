@@ -549,7 +549,7 @@ public class ManagedChannelImplTest {
     assertSame(error.getCause(), status.getCause());
     // LoadBalancer received the same error
     assertEquals(1, loadBalancerFactory.balancers.size());
-    verify(loadBalancerFactory.balancers.get(0)).handleNameResolutionError(same(error));
+    verify(loadBalancerFactory.balancers.get(0).spyingNameResolverListener).onError(same(error));
   }
 
   @Test
@@ -570,7 +570,8 @@ public class ManagedChannelImplTest {
     assertTrue(status.getDescription(), status.getDescription().contains(errorDescription));
     // LoadBalancer received the same error
     assertEquals(1, loadBalancerFactory.balancers.size());
-    verify(loadBalancerFactory.balancers.get(0)).handleNameResolutionError(statusCaptor.capture());
+    verify(loadBalancerFactory.balancers.get(0).spyingNameResolverListener)
+        .onError(statusCaptor.capture());
     status = statusCaptor.getValue();
     assertSame(Status.Code.UNAVAILABLE, status.getCode());
     assertEquals(errorDescription, status.getDescription());
@@ -588,8 +589,8 @@ public class ManagedChannelImplTest {
     executor.runDueTasks();
 
     assertEquals(1, loadBalancerFactory.balancers.size());
-    LoadBalancer<?> loadBalancer = loadBalancerFactory.balancers.get(0);
-    doThrow(ex).when(loadBalancer).handleResolvedAddresses(
+    SpyingLoadBalancer<?> loadBalancer = loadBalancerFactory.balancers.get(0);
+    doThrow(ex).when(loadBalancer.spyingNameResolverListener).onUpdate(
         Matchers.<List<ResolvedServerInfoGroup>>anyObject(), any(Attributes.class));
 
     // NameResolver returns addresses.
@@ -602,7 +603,7 @@ public class ManagedChannelImplTest {
     assertSame(Status.Code.INTERNAL, status.getCode());
     assertSame(ex, status.getCause());
     // The LoadBalancer received the same error
-    verify(loadBalancer).handleNameResolutionError(statusCaptor.capture());
+    verify(loadBalancer.spyingNameResolverListener).onError(statusCaptor.capture());
     status = statusCaptor.getValue();
     assertSame(Status.Code.INTERNAL, status.getCode());
     assertSame(ex, status.getCause());
@@ -1036,7 +1037,7 @@ public class ManagedChannelImplTest {
 
   private static class SpyingLoadBalancerFactory extends LoadBalancer.Factory {
     private final LoadBalancer.Factory delegate;
-    private final List<LoadBalancer<?>> balancers = new ArrayList<LoadBalancer<?>>();
+    private final List<SpyingLoadBalancer<?>> balancers = new ArrayList<SpyingLoadBalancer<?>>();
 
     private SpyingLoadBalancerFactory(LoadBalancer.Factory delegate) {
       this.delegate = delegate;
@@ -1044,9 +1045,35 @@ public class ManagedChannelImplTest {
 
     @Override
     public <T> LoadBalancer<T> newLoadBalancer(String serviceName, TransportManager<T> tm) {
-      LoadBalancer<T> lb = spy(delegate.newLoadBalancer(serviceName, tm));
+      SpyingLoadBalancer<T> lb =
+          spy(new SpyingLoadBalancer<T>(delegate.newLoadBalancer(serviceName, tm)));
       balancers.add(lb);
       return lb;
+    }
+  }
+
+  private static class SpyingLoadBalancer<T> extends LoadBalancer<T> {
+    final LoadBalancer<T> delegate;
+    final NameResolver.Listener spyingNameResolverListener;
+
+    SpyingLoadBalancer(LoadBalancer<T> delegate) {
+      this.delegate = delegate;
+      this.spyingNameResolverListener = spy(delegate.getNameResolverListener());
+    }
+
+    @Override
+    public T pickTransport(Attributes affinity) {
+      return delegate.pickTransport(affinity);
+    }
+
+    @Override
+    public void shutdown() {
+      delegate.shutdown();
+    }
+
+    @Override
+    public NameResolver.Listener getNameResolverListener() {
+      return spyingNameResolverListener;
     }
   }
 }

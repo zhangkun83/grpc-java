@@ -46,12 +46,13 @@ import com.google.common.collect.Lists;
 import io.grpc.Attributes;
 import io.grpc.EquivalentAddressGroup;
 import io.grpc.LoadBalancer;
-
+import io.grpc.NameResolver;
 import io.grpc.ResolvedServerInfo;
 import io.grpc.ResolvedServerInfoGroup;
 import io.grpc.Status;
 import io.grpc.TransportManager;
 import io.grpc.TransportManager.InterimTransport;
+import io.grpc.TransportManager.Subchannel;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -71,11 +72,15 @@ import java.util.List;
 @RunWith(JUnit4.class)
 public class RoundRobinLoadBalancerTest {
   private LoadBalancer<Transport> loadBalancer;
+  private NameResolver.Listener nameResolverListener;
 
   private List<ResolvedServerInfoGroup> servers;
   private List<EquivalentAddressGroup> addressGroupList;
 
   @Mock private TransportManager<Transport> mockTransportManager;
+  @Mock private Subchannel<Transport> mockSubchannel0;
+  @Mock private Subchannel<Transport> mockSubchannel1;
+  @Mock private Subchannel<Transport> mockSubchannel2;
   @Mock private Transport mockTransport0;
   @Mock private Transport mockTransport1;
   @Mock private Transport mockTransport2;
@@ -88,6 +93,7 @@ public class RoundRobinLoadBalancerTest {
     MockitoAnnotations.initMocks(this);
     loadBalancer = RoundRobinLoadBalancerFactory.getInstance().newLoadBalancer(
         "fakeservice", mockTransportManager);
+    nameResolverListener = loadBalancer.getNameResolverListener();
     addressGroupList = Lists.newArrayList();
     servers = Lists.newArrayList();
     for (int i = 0; i < 3; i++) {
@@ -99,12 +105,15 @@ public class RoundRobinLoadBalancerTest {
       servers.add(resolvedServerInfoGroup.build());
       addressGroupList.add(resolvedServerInfoGroup.build().toEquivalentAddressGroup());
     }
-    when(mockTransportManager.getTransport(eq(addressGroupList.get(0))))
-        .thenReturn(mockTransport0);
-    when(mockTransportManager.getTransport(eq(addressGroupList.get(1))))
-        .thenReturn(mockTransport1);
-    when(mockTransportManager.getTransport(eq(addressGroupList.get(2))))
-        .thenReturn(mockTransport2);
+    when(mockTransportManager.createSubchannel(eq(addressGroupList.get(0))))
+        .thenReturn(mockSubchannel0);
+    when(mockTransportManager.createSubchannel(eq(addressGroupList.get(1))))
+        .thenReturn(mockSubchannel1);
+    when(mockTransportManager.createSubchannel(eq(addressGroupList.get(2))))
+        .thenReturn(mockSubchannel2);
+    when(mockSubchannel0.getTransport()).thenReturn(mockTransport0);
+    when(mockSubchannel1.getTransport()).thenReturn(mockTransport1);
+    when(mockSubchannel2.getTransport()).thenReturn(mockTransport2);
     when(mockTransportManager.createInterimTransport()).thenReturn(mockInterimTransport);
     when(mockInterimTransport.transport()).thenReturn(mockInterimTransportAsTransport);
   }
@@ -116,16 +125,20 @@ public class RoundRobinLoadBalancerTest {
     assertSame(mockInterimTransportAsTransport, t1);
     assertSame(mockInterimTransportAsTransport, t2);
     verify(mockTransportManager).createInterimTransport();
-    verify(mockTransportManager, never()).getTransport(any(EquivalentAddressGroup.class));
+    verify(mockTransportManager, never()).createSubchannel(any(EquivalentAddressGroup.class));
     verify(mockInterimTransport, times(2)).transport();
 
-    loadBalancer.handleResolvedAddresses(servers, Attributes.EMPTY);
+    nameResolverListener.onUpdate(servers, Attributes.EMPTY);
+    verify(mockTransportManager).createSubchannel(eq(addressGroupList.get(0)));
+    verify(mockTransportManager).createSubchannel(eq(addressGroupList.get(1)));
+    verify(mockTransportManager, never()).createSubchannel(eq(addressGroupList.get(2)));
+
     verify(mockInterimTransport).closeWithRealTransports(transportSupplierCaptor.capture());
     assertSame(mockTransport0, transportSupplierCaptor.getValue().get());
     assertSame(mockTransport1, transportSupplierCaptor.getValue().get());
-    InOrder inOrder = Mockito.inOrder(mockTransportManager);
-    inOrder.verify(mockTransportManager).getTransport(eq(addressGroupList.get(0)));
-    inOrder.verify(mockTransportManager).getTransport(eq(addressGroupList.get(1)));
+    InOrder inOrder = Mockito.inOrder(mockSubchannel0, mockSubchannel1, mockSubchannel2);
+    inOrder.verify(mockSubchannel0).getTransport();
+    inOrder.verify(mockSubchannel1).getTransport();
     inOrder.verifyNoMoreInteractions();
     verifyNoMoreInteractions(mockInterimTransport);
   }
@@ -137,15 +150,15 @@ public class RoundRobinLoadBalancerTest {
     assertSame(mockInterimTransportAsTransport, t1);
     assertSame(mockInterimTransportAsTransport, t2);
     verify(mockTransportManager).createInterimTransport();
-    verify(mockTransportManager, never()).getTransport(any(EquivalentAddressGroup.class));
+    verify(mockTransportManager, never()).createSubchannel(any(EquivalentAddressGroup.class));
     verify(mockInterimTransport, times(2)).transport();
 
-    loadBalancer.handleNameResolutionError(Status.UNAVAILABLE);
+    nameResolverListener.onError(Status.UNAVAILABLE);
     verify(mockInterimTransport).closeWithError(any(Status.class));
     // Ensure a shutdown after error closes without incident
     loadBalancer.shutdown();
     // Ensure a name resolution error after shutdown does nothing
-    loadBalancer.handleNameResolutionError(Status.UNAVAILABLE);
+    nameResolverListener.onError(Status.UNAVAILABLE);
     verifyNoMoreInteractions(mockInterimTransport);
   }
 
@@ -156,7 +169,7 @@ public class RoundRobinLoadBalancerTest {
     assertSame(mockInterimTransportAsTransport, t1);
     assertSame(mockInterimTransportAsTransport, t2);
     verify(mockTransportManager).createInterimTransport();
-    verify(mockTransportManager, never()).getTransport(any(EquivalentAddressGroup.class));
+    verify(mockTransportManager, never()).createSubchannel(any(EquivalentAddressGroup.class));
     verify(mockInterimTransport, times(2)).transport();
 
     loadBalancer.shutdown();
@@ -168,15 +181,18 @@ public class RoundRobinLoadBalancerTest {
 
   @Test
   public void pickAfterResolved() throws Exception {
-    loadBalancer.handleResolvedAddresses(servers, Attributes.EMPTY);
-    InOrder inOrder = Mockito.inOrder(mockTransportManager);
+    nameResolverListener.onUpdate(servers, Attributes.EMPTY);
+    verify(mockTransportManager).createSubchannel(eq(addressGroupList.get(0)));
+    verify(mockTransportManager).createSubchannel(eq(addressGroupList.get(1)));
+    verify(mockTransportManager).createSubchannel(eq(addressGroupList.get(2)));
+    InOrder inOrder = Mockito.inOrder(mockSubchannel0, mockSubchannel1, mockSubchannel2);
     for (int i = 0; i < 100; i++) {
       assertSame(mockTransport0, loadBalancer.pickTransport(null));
-      inOrder.verify(mockTransportManager).getTransport(eq(addressGroupList.get(0)));
+      inOrder.verify(mockSubchannel0).getTransport();
       assertSame(mockTransport1, loadBalancer.pickTransport(null));
-      inOrder.verify(mockTransportManager).getTransport(eq(addressGroupList.get(1)));
+      inOrder.verify(mockSubchannel1).getTransport();
       assertSame(mockTransport2, loadBalancer.pickTransport(null));
-      inOrder.verify(mockTransportManager).getTransport(eq(addressGroupList.get(2)));
+      inOrder.verify(mockSubchannel2).getTransport();
     }
     inOrder.verifyNoMoreInteractions();
   }

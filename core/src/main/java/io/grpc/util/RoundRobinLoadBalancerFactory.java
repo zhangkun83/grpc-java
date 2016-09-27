@@ -87,6 +87,7 @@ public final class RoundRobinLoadBalancerFactory extends LoadBalancer.Factory {
     private final HashMap<EquivalentAddressGroup, SubchannelState<T>> subchannels =
         new HashMap<EquivalentAddressGroup, SubchannelState<T>>();
 
+    // Must be modified under the lock
     private volatile RoundRobinSubchannelList<T> roundRobinList;
 
     @GuardedBy("lock")
@@ -233,23 +234,12 @@ public final class RoundRobinLoadBalancerFactory extends LoadBalancer.Factory {
 
     @Override
     public void shutdown() {
-      InterimTransport<T> savedInterimTransport;
-      ArrayList<SubchannelState<T>> savedSubchannels;
       synchronized (lock) {
         if (closed) {
           return;
         }
         closed = true;
-        savedInterimTransport = interimTransport;
-        savedSubchannels = new ArrayList<SubchannelState<T>>(subchannels.values());
-        interimTransport = null;
         roundRobinList = null;
-      }
-      if (savedInterimTransport != null) {
-        savedInterimTransport.closeWithError(SHUTDOWN_STATUS);
-      }
-      for (SubchannelState<T> subchannel : savedSubchannels) {
-        subchannel.subchannel.shutdown();
       }
     }
   }

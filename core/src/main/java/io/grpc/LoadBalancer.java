@@ -62,6 +62,14 @@ public abstract class LoadBalancer<T> {
 
   /**
    * Shuts down this {@code LoadBalancer}.
+   *
+   * <p>After this method is called, the {@link LoadBalancer} must not call any of the
+   * following methods, as they will begin to throw.
+   * <ol>
+   *   <li>{@link TransportManager#createSubchannel}</li>
+   *   <li>{@link TransportManager#createInterimTransport}</li>
+   *   <li>{@link TransportManager#createOobChannel}</li>
+   * </ol>
    */
   public void shutdown() { }
 

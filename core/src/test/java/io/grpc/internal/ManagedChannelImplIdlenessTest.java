@@ -33,6 +33,7 @@ package io.grpc.internal;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
@@ -63,6 +64,7 @@ import io.grpc.ResolvedServerInfoGroup;
 import io.grpc.Status;
 import io.grpc.StringMarshaller;
 import io.grpc.TransportManager.InterimTransport;
+import io.grpc.TransportManager.Subchannel;
 import io.grpc.TransportManager;
 import io.grpc.internal.TestUtils.MockClientTransportInfo;
 
@@ -200,9 +202,9 @@ public class ManagedChannelImplIdlenessTest {
   public void enterIdleModeAfterForceExit() throws Exception {
     forceExitIdleMode();
 
-    // Trigger the creation of TransportSets
+    // Trigger the creation of TransportSets and transports
     for (EquivalentAddressGroup addressGroup : addressGroupList) {
-      channel.tm.createSubchannel(addressGroup);
+      channel.tm.createSubchannel(addressGroup).getState(true);
       verify(mockTransportFactory).newClientTransport(
           addressGroup.getAddresses().get(0), authority, userAgent);
     }
@@ -288,18 +290,24 @@ public class ManagedChannelImplIdlenessTest {
     EquivalentAddressGroup addressGroup = addressGroupList.get(0);
     forceExitIdleMode();
 
-    ClientTransport sct0 = channel.tm.createSubchannel(addressGroup).getTransport();
+    Subchannel<ClientTransport> sc0 = channel.tm.createSubchannel(addressGroup);
+    sc0.getState(true);  // Go out of IDLE so that TransportSet will create a transport
     MockClientTransportInfo t0 = newTransports.poll();
+    assertNotNull(t0);
     t0.listener.transportReady();
+    ClientTransport sct0 = sc0.getTransport();
     assertSame(t0.transport, unwrapTransport(sct0));
 
     walkIntoIdleMode(Arrays.asList(t0));
     verify(t0.transport).shutdown();
 
     forceExitIdleMode();
-    ClientTransport sct1 = channel.tm.createSubchannel(addressGroup).getTransport();
+    Subchannel<ClientTransport> sc1 = channel.tm.createSubchannel(addressGroup);
+    sc1.getState(true);  // Go out of IDLE so that TransportSet will create a transport
     MockClientTransportInfo t1 = newTransports.poll();
+    assertNotNull(t1);
     t1.listener.transportReady();
+    ClientTransport sct1 = sc1.getTransport();
 
     assertSame(t1.transport, unwrapTransport(sct1));
     assertNotSame(t0.transport, t1.transport);

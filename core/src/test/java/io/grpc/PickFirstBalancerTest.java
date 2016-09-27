@@ -136,20 +136,18 @@ public class PickFirstBalancerTest {
   }
 
   @Test
-  public void pickBeforeShutdown() {
+  public void pickAfterShutdown() {
+    loadBalancer.shutdown();
     Transport t1 = loadBalancer.pickTransport(null);
-    Transport t2 = loadBalancer.pickTransport(null);
-    assertSame(mockInterimTransportAsTransport, t1);
-    assertSame(mockInterimTransportAsTransport, t2);
-    verify(mockTransportManager).createInterimTransport();
-    verify(mockTransportManager, never()).createSubchannel(any(EquivalentAddressGroup.class));
-    verify(mockInterimTransport, times(2)).transport();
+    verify(mockTransportManager).createFailingTransport(any(Status.class));
+    verifyNoMoreInteractions(mockTransportManager);
+  }
 
+  @Test
+  public void nameResolvedAfterShutdown() {
     loadBalancer.shutdown();
-    verify(mockInterimTransport).closeWithError(any(Status.class));
-    // Ensure double shutdown just returns immediately without closing again.
-    loadBalancer.shutdown();
-    verifyNoMoreInteractions(mockInterimTransport);
+    nameResolverListener.onUpdate(servers, Attributes.EMPTY);
+    verifyNoMoreInteractions(mockTransportManager);
   }
 
   @Test

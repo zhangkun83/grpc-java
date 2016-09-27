@@ -47,7 +47,8 @@ public abstract class TransportManager<T> {
    * <p>Calls made by LoadBalancer directly on a Subchannel will not go through the interceptors
    * on the top-level channel.
    *
-   * <p>The LoadBalancer should shut it down when no longer used.
+   * <p>The LoadBalancer should shut it down when no longer used, unless it's shut down, in which
+   * case the top-level channel will close all subchannels.
    */
   public abstract Subchannel<T> createSubchannel(EquivalentAddressGroup addressGroup);
 
@@ -63,7 +64,8 @@ public abstract class TransportManager<T> {
    * <p>This method is typically used in lieu of {@link #getTransport} before server addresses are
    * known.
    *
-   * <p>The LoadBalancer should shut it down when no longer used.
+   * <p>The LoadBalancer should shut it down when no longer used, unless it's shut down, in which
+   * case the top-level channel will close all interim transports.
    */
   public abstract InterimTransport<T> createInterimTransport();
 
@@ -75,7 +77,8 @@ public abstract class TransportManager<T> {
    * <p>Calls made by LoadBalancer directly on this OOB channel will not go through the interceptors
    * on the top-level channel.
    *
-   * <p>The LoadBalancer should shut it down when no longer used.
+   * <p>The LoadBalancer should shut it down when no longer used, unless it's shut down, in which
+   * case the top-level channel will close all OOB channels.
    */
   public abstract ManagedChannel createOobChannel(
       EquivalentAddressGroup addressGroup, String authority);

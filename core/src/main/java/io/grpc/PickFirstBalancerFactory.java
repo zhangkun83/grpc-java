@@ -70,7 +70,9 @@ public final class PickFirstBalancerFactory extends LoadBalancer.Factory {
 
     private final PickFirstBalancerLock lock = new PickFirstBalancerLock();
 
+    // Must be set under the lock
     private volatile Subchannel<T> subchannel;
+
     @GuardedBy("lock")
     private EquivalentAddressGroup addresses;
     @GuardedBy("lock")
@@ -108,7 +110,13 @@ public final class PickFirstBalancerFactory extends LoadBalancer.Factory {
           if (oldSubchannel != null) {
             oldSubchannel.shutdown();
           }
-          subchannel = newSubchannel;
+          synchronized (lock) {
+            if (closed) {
+              return;
+            }
+            subchannel = newSubchannel;
+          }
+
           if (savedInterimTransport != null) {
             savedInterimTransport.closeWithRealTransports(new Supplier<T>() {
                 @Override public T get() {
@@ -171,24 +179,12 @@ public final class PickFirstBalancerFactory extends LoadBalancer.Factory {
 
     @Override
     public void shutdown() {
-      InterimTransport<T> savedInterimTransport;
-      Subchannel<T> savedSubchannel;
       synchronized (lock) {
         if (closed) {
           return;
         }
         closed = true;
-        addresses = null;
-        savedSubchannel = subchannel;
         subchannel = null;
-        savedInterimTransport = interimTransport;
-        interimTransport = null;
-      }
-      if (savedInterimTransport != null) {
-        savedInterimTransport.closeWithError(SHUTDOWN_STATUS);
-      }
-      if (savedSubchannel != null) {
-        savedSubchannel.shutdown();
       }
     }
 

@@ -195,6 +195,12 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
         loadBalancer = null;
         oldResolver = nameResolver;
         nameResolver = getNameResolver(target, nameResolverFactory, nameResolverParams);
+      }
+      // Shut down the balancer first, so that it won't create new TransportSets after we collecting
+      // the existing ones.
+      savedBalancer.shutdown();
+      oldResolver.shutdown();
+      synchronized (lock) {
         transportsCopy.addAll(transports);
         transports.clear();
         decommissionedTransports.addAll(transportsCopy);
@@ -202,8 +208,6 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
       for (TransportSet ts : transportsCopy) {
         ts.shutdown();
       }
-      savedBalancer.shutdown();
-      oldResolver.shutdown();
     }
   }
 
@@ -412,8 +416,19 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
         return this;
       }
       shutdown = true;
+      balancer = loadBalancer;
+      resolver = nameResolver;
+      cancelIdleTimer();
       // After shutdown there are no new calls, so no new cancellation tasks are needed
       scheduledExecutor = SharedResourceHolder.release(timerService, scheduledExecutor);
+    }
+    // Shut down the balancer first, so that it won't create new TransportSets after we collecting
+    // the existing ones.
+    if (balancer != null) {
+      balancer.shutdown();
+    }
+    resolver.shutdown();
+    synchronized (lock) {
       maybeTerminateChannel();
       if (!terminated) {
         transportsCopy.addAll(transports);
@@ -421,14 +436,8 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
         decommissionedTransports.addAll(transportsCopy);
         delayedTransportsCopy.addAll(delayedTransports);
       }
-      balancer = loadBalancer;
-      resolver = nameResolver;
-      cancelIdleTimer();
     }
-    if (balancer != null) {
-      balancer.shutdown();
-    }
-    resolver.shutdown();
+
     // TODO(zhangkun83): maybe not shutdown them, and make it clear that it's LoadBalancer's job
     for (TransportSet ts : transportsCopy) {
       ts.shutdown();
@@ -595,9 +604,9 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
       final EquivalentAddressGroup addressGroup, String authority) {
     checkNotNull(addressGroup, "addressGroup");
     synchronized (lock) {
-      if (shutdown) {
-        return new ErroringSubChannel(SHUTDOWN_TRANSPORT, authority, addressGroup);
-      }
+      // LoadBalancer should not create Subchannel or OOB Channel after it's shutdown
+      checkState(!shutdown, "Channel already shutdown");
+      checkState(loadBalancer != null, "Channel is in IDLE mode");
       TransportSet ts = new TransportSet(addressGroup, authority, userAgent,
           backoffPolicyProvider, transportFactory, scheduledExecutor, stopwatchSupplier,
           executor, new TransportSet.Callback() {
