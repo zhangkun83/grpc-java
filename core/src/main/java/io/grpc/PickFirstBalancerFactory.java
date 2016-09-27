@@ -70,11 +70,9 @@ public final class PickFirstBalancerFactory extends LoadBalancer.Factory {
 
     private final PickFirstBalancerLock lock = new PickFirstBalancerLock();
 
-    // Must be set under the lock
+    // Must be null if closed == true.
     private volatile Subchannel<T> subchannel;
 
-    @GuardedBy("lock")
-    private EquivalentAddressGroup addresses;
     @GuardedBy("lock")
     private InterimTransport<T> interimTransport;
     @GuardedBy("lock")
@@ -85,36 +83,30 @@ public final class PickFirstBalancerFactory extends LoadBalancer.Factory {
     private final TransportManager<T> tm;
 
     private final NameResolver.Listener nameResolverListener = new NameResolver.Listener() {
+        private EquivalentAddressGroup addresses;
+
         @Override
         public void onUpdate(List<ResolvedServerInfoGroup> updatedServers, Attributes attributes) {
           InterimTransport<T> savedInterimTransport;
           EquivalentAddressGroup newAddresses;
-          Subchannel<T> oldSubchannel;
-          final Subchannel<T> newSubchannel;
-          synchronized (lock) {
-            if (closed) {
-              return;
-            }
-            newAddresses = resolvedServerInfoGroupsToEquivalentAddressGroup(updatedServers);
-            if (newAddresses.equals(addresses)) {
-              return;
-            }
-            oldSubchannel = subchannel;
-            addresses = newAddresses;
-            nameResolutionError = null;
-            savedInterimTransport = interimTransport;
-            interimTransport = null;
+          newAddresses = resolvedServerInfoGroupsToEquivalentAddressGroup(updatedServers);
+          if (newAddresses.equals(addresses)) {
+            return;
           }
-          // From the fear for deadlocks, create and close subchannels outside of the lock
-          newSubchannel = tm.createSubchannel(newAddresses);
+          addresses = newAddresses;
+          Subchannel<T> oldSubchannel = subchannel;
           if (oldSubchannel != null) {
             oldSubchannel.shutdown();
           }
+          final Subchannel<T> newSubchannel = tm.createSubchannel(addresses);
           synchronized (lock) {
             if (closed) {
               return;
             }
             subchannel = newSubchannel;
+            nameResolutionError = null;
+            savedInterimTransport = interimTransport;
+            interimTransport = null;
           }
 
           if (savedInterimTransport != null) {

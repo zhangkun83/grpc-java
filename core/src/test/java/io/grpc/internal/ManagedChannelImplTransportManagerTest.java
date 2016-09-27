@@ -378,12 +378,8 @@ public class ManagedChannelImplTransportManagerTest {
     channel.shutdown();
     verify(transportInfo2.transport).shutdown();
 
-    try {
-      ManagedChannel p3 = tm.createOobChannel(addressGroup, oobAuthority);
-      fail("Should have thrown");
-    } catch (IllegalStateException e) {
-      // Expected
-    }
+    ManagedChannel p3 = tm.createOobChannel(addressGroup, oobAuthority);
+    assertTrue(p3 instanceof ManagedChannelImpl.ErroringSubChannel);
 
     p2.shutdown();
 

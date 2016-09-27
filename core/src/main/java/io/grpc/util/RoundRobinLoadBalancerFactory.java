@@ -50,7 +50,9 @@ import io.grpc.internal.RoundRobinSubchannelList;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map.Entry;
 import javax.annotation.concurrent.GuardedBy;
 
 
@@ -83,11 +85,8 @@ public final class RoundRobinLoadBalancerFactory extends LoadBalancer.Factory {
 
     private final RoundRobinLoadBalancerLock lock = new RoundRobinLoadBalancerLock();
 
-    @GuardedBy("lock")
-    private final HashMap<EquivalentAddressGroup, SubchannelState<T>> subchannels =
-        new HashMap<EquivalentAddressGroup, SubchannelState<T>>();
-
-    // Must be modified under the lock
+    // Must be null if closed == true
+    // Must be set under the lock.
     private volatile RoundRobinSubchannelList<T> roundRobinList;
 
     @GuardedBy("lock")
@@ -100,6 +99,9 @@ public final class RoundRobinLoadBalancerFactory extends LoadBalancer.Factory {
     private final TransportManager<T> tm;
 
     private final NameResolver.Listener nameResolverListener = new NameResolver.Listener() {
+      private final HashMap<EquivalentAddressGroup, SubchannelState<T>> subchannels =
+          new HashMap<EquivalentAddressGroup, SubchannelState<T>>();
+
       @Override
       public void onUpdate(List<ResolvedServerInfoGroup> updatedServers,
           Attributes attributes) {
@@ -107,57 +109,34 @@ public final class RoundRobinLoadBalancerFactory extends LoadBalancer.Factory {
             new ArrayList<EquivalentAddressGroup>();
         HashSet<EquivalentAddressGroup> updatedAddressGroupSet =
             new HashSet<EquivalentAddressGroup>();
-        HashSet<EquivalentAddressGroup> newAddressGroupSet =
-            new HashSet<EquivalentAddressGroup>();
-        HashSet<Subchannel<T>> subchannelsToBeRemoved = new HashSet<Subchannel<T>>();
         final RoundRobinSubchannelList<T> savedRoundRobinList;
         InterimTransport<T> savedInterimTransport;
 
-        // Find out the added and removed subchannels
+        // Find out the added and removed subchannels, and create the added subchannels
+        for (ResolvedServerInfoGroup serverInfoGroup : updatedServers) {
+          EquivalentAddressGroup addressGroup = serverInfoGroup.toEquivalentAddressGroup();
+          if (!subchannels.containsKey(addressGroup)) {
+            subchannels.put(addressGroup, new SubchannelState<T>(tm.createSubchannel(addressGroup)));
+          }
+          updatedAddressGroupList.add(addressGroup);
+          updatedAddressGroupSet.add(addressGroup);
+        }
+
+        // Shutdown the removed subchannels
+        for (Iterator<Entry<EquivalentAddressGroup, SubchannelState<T>>> it =
+                 subchannels.entrySet().iterator(); it.hasNext();) {
+          Entry<EquivalentAddressGroup, SubchannelState<T>> entry = it.next();
+          if (!updatedAddressGroupSet.contains(entry.getKey())) {
+            entry.getValue().subchannel.shutdown();
+            it.remove();
+          }
+        }
+
+        // Build the new round-robin list, if not shutdown yet
         synchronized (lock) {
           if (closed) {
             return;
           }
-          for (ResolvedServerInfoGroup serverInfoGroup : updatedServers) {
-            EquivalentAddressGroup addressGroup = serverInfoGroup.toEquivalentAddressGroup();
-            if (!subchannels.containsKey(addressGroup)) {
-              newAddressGroupSet.add(addressGroup);
-            }
-            updatedAddressGroupList.add(addressGroup);
-            updatedAddressGroupSet.add(addressGroup);
-          }
-          for (SubchannelState<T> subchannel : subchannels.values()) {
-            if (!updatedAddressGroupSet.contains(subchannel.subchannel.getAddresses())) {
-              subchannelsToBeRemoved.add(subchannel.subchannel);
-            }
-          }
-        }
-
-        // From the fear for deadlocks, create and close subchannels outside of the lock
-        ArrayList<SubchannelState<T>> newSubchannels = new ArrayList<SubchannelState<T>>();
-        for (EquivalentAddressGroup addressGroup : newAddressGroupSet) {
-          newSubchannels.add(new SubchannelState<T>(tm.createSubchannel(addressGroup)));
-        }
-        for (Subchannel<T> subchannel : subchannelsToBeRemoved) {
-          subchannel.shutdown();
-        }
-
-        // Update states
-        synchronized (lock) {
-          if (closed) {
-            // I lost a race to shutdown().  All subchannels will be shutdown by the top-level
-            // channel.
-            return;
-          }
-          for (SubchannelState<T> subchannel : newSubchannels) {
-            checkState(subchannels.put(subchannel.subchannel.getAddresses(), subchannel) == null,
-                "Subchannel for %s already exists", subchannel.subchannel.getAddresses());
-          }
-          for (Subchannel<T> subchannel : subchannelsToBeRemoved) {
-            checkState(subchannels.remove(subchannel.getAddresses()) != null,
-                "Subchannel to be removed for %s is missing", subchannel.getAddresses());
-          }
-          // Build the new round-robin list
           RoundRobinSubchannelList.Builder<T> listBuilder =
               new RoundRobinSubchannelList.Builder<T>(tm);
           for (EquivalentAddressGroup addressGroup : updatedAddressGroupList) {

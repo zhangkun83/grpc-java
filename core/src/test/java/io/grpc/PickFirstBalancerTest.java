@@ -72,6 +72,7 @@ public class PickFirstBalancerTest {
   @Mock private Subchannel<Transport> mockSubchannel;
   @Mock private InterimTransport<Transport> mockInterimTransport;
   @Mock private Transport mockInterimTransportAsTransport;
+  @Mock private Transport mockFailingTransport;
   @Captor private ArgumentCaptor<Supplier<Transport>> transportSupplierCaptor;
 
   @Before
@@ -92,6 +93,8 @@ public class PickFirstBalancerTest {
     when(mockTransportManager.createSubchannel(eq(addressGroup))).thenReturn(mockSubchannel);
     when(mockSubchannel.getTransport()).thenReturn(mockTransport);
     when(mockTransportManager.createInterimTransport()).thenReturn(mockInterimTransport);
+    when(mockTransportManager.createFailingTransport(any(Status.class)))
+        .thenReturn(mockFailingTransport);
     when(mockInterimTransport.transport()).thenReturn(mockInterimTransportAsTransport);
   }
 
@@ -147,7 +150,9 @@ public class PickFirstBalancerTest {
   public void nameResolvedAfterShutdown() {
     loadBalancer.shutdown();
     nameResolverListener.onUpdate(servers, Attributes.EMPTY);
-    verifyNoMoreInteractions(mockTransportManager);
+    Transport t = loadBalancer.pickTransport(null);
+    verify(mockTransportManager).createFailingTransport(any(Status.class));
+    assertSame(mockFailingTransport, t);
   }
 
   @Test

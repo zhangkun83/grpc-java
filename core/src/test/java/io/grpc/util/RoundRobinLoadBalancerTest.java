@@ -85,6 +85,7 @@ public class RoundRobinLoadBalancerTest {
   @Mock private Transport mockTransport1;
   @Mock private Transport mockTransport2;
   @Mock private InterimTransport<Transport> mockInterimTransport;
+  @Mock private Transport mockFailingTransport;
   @Mock private Transport mockInterimTransportAsTransport;
   @Captor private ArgumentCaptor<Supplier<Transport>> transportSupplierCaptor;
 
@@ -115,6 +116,8 @@ public class RoundRobinLoadBalancerTest {
     when(mockSubchannel1.getTransport()).thenReturn(mockTransport1);
     when(mockSubchannel2.getTransport()).thenReturn(mockTransport2);
     when(mockTransportManager.createInterimTransport()).thenReturn(mockInterimTransport);
+    when(mockTransportManager.createFailingTransport(any(Status.class)))
+        .thenReturn(mockFailingTransport);
     when(mockInterimTransport.transport()).thenReturn(mockInterimTransportAsTransport);
   }
 
@@ -131,7 +134,7 @@ public class RoundRobinLoadBalancerTest {
     nameResolverListener.onUpdate(servers, Attributes.EMPTY);
     verify(mockTransportManager).createSubchannel(eq(addressGroupList.get(0)));
     verify(mockTransportManager).createSubchannel(eq(addressGroupList.get(1)));
-    verify(mockTransportManager, never()).createSubchannel(eq(addressGroupList.get(2)));
+    verify(mockTransportManager).createSubchannel(eq(addressGroupList.get(2)));
 
     verify(mockInterimTransport).closeWithRealTransports(transportSupplierCaptor.capture());
     assertSame(mockTransport0, transportSupplierCaptor.getValue().get());
@@ -163,23 +166,6 @@ public class RoundRobinLoadBalancerTest {
   }
 
   @Test
-  public void pickBeforeShutdown() {
-    Transport t1 = loadBalancer.pickTransport(null);
-    Transport t2 = loadBalancer.pickTransport(null);
-    assertSame(mockInterimTransportAsTransport, t1);
-    assertSame(mockInterimTransportAsTransport, t2);
-    verify(mockTransportManager).createInterimTransport();
-    verify(mockTransportManager, never()).createSubchannel(any(EquivalentAddressGroup.class));
-    verify(mockInterimTransport, times(2)).transport();
-
-    loadBalancer.shutdown();
-    verify(mockInterimTransport).closeWithError(any(Status.class));
-    // Ensure double shutdown just returns immediately without closing again.
-    loadBalancer.shutdown();
-    verifyNoMoreInteractions(mockInterimTransport);
-  }
-
-  @Test
   public void pickAfterResolved() throws Exception {
     nameResolverListener.onUpdate(servers, Attributes.EMPTY);
     verify(mockTransportManager).createSubchannel(eq(addressGroupList.get(0)));
@@ -195,6 +181,15 @@ public class RoundRobinLoadBalancerTest {
       inOrder.verify(mockSubchannel2).getTransport();
     }
     inOrder.verifyNoMoreInteractions();
+  }
+
+  @Test
+  public void nameResolvedAfterShutdown() {
+    loadBalancer.shutdown();
+    nameResolverListener.onUpdate(servers, Attributes.EMPTY);
+    Transport t = loadBalancer.pickTransport(null);
+    verify(mockTransportManager).createFailingTransport(any(Status.class));
+    assertSame(mockFailingTransport, t);
   }
 
   private static class FakeSocketAddress extends SocketAddress {

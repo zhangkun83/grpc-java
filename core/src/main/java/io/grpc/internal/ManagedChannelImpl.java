@@ -97,6 +97,9 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
   private static final FailingClientTransport SHUTDOWN_TRANSPORT =
       new FailingClientTransport(Status.UNAVAILABLE.withDescription("Channel is shutdown"));
 
+  private static final FailingClientTransport IDLEMODE_TRANSPORT =
+      new FailingClientTransport(Status.UNAVAILABLE.withDescription("Channel is in IDLE mode"));
+
   private final String target;
   private final NameResolver.Factory nameResolverFactory;
   private final Attributes nameResolverParams;
@@ -104,7 +107,7 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
   private final ClientTransportFactory transportFactory;
   private final Executor executor;
   private final boolean usingSharedExecutor;
-  private final Object lock = new Object();
+  private final ManagedChannelImplLock lock = new ManagedChannelImplLock();
 
   private final DecompressorRegistry decompressorRegistry;
   private final CompressorRegistry compressorRegistry;
@@ -116,7 +119,7 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
   /**
    * Executor that runs deadline timers for requests.
    */
-  private ScheduledExecutorService scheduledExecutor;
+  private final ScheduledExecutorService scheduledExecutor;
 
   private final BackoffPolicy.Provider backoffPolicyProvider;
 
@@ -420,7 +423,7 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
       resolver = nameResolver;
       cancelIdleTimer();
       // After shutdown there are no new calls, so no new cancellation tasks are needed
-      scheduledExecutor = SharedResourceHolder.release(timerService, scheduledExecutor);
+      SharedResourceHolder.release(timerService, scheduledExecutor);
     }
     // Shut down the balancer first, so that it won't create new TransportSets after we collecting
     // the existing ones.
@@ -589,7 +592,17 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
 
     @Override
     public InterimTransport<ClientTransport> createInterimTransport() {
-      return new InterimTransportImpl();
+      synchronized (lock) {
+        if (shutdown) {
+          return new ErroringInterimTransportImpl(SHUTDOWN_TRANSPORT);
+        }
+        if (loadBalancer == null) {
+          return new ErroringInterimTransportImpl(IDLEMODE_TRANSPORT);
+        }
+        InterimTransportImpl impl = new InterimTransportImpl();
+        delayedTransports.add(impl.delayedTransport);
+        return impl;
+      }
     }
 
     @Override
@@ -604,9 +617,12 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
       final EquivalentAddressGroup addressGroup, String authority) {
     checkNotNull(addressGroup, "addressGroup");
     synchronized (lock) {
-      // LoadBalancer should not create Subchannel or OOB Channel after it's shutdown
-      checkState(!shutdown, "Channel already shutdown");
-      checkState(loadBalancer != null, "Channel is in IDLE mode");
+      if (shutdown) {
+        return new ErroringSubChannel(SHUTDOWN_TRANSPORT, authority, addressGroup);
+      }
+      if (loadBalancer == null) {
+        return new ErroringSubChannel(IDLEMODE_TRANSPORT, authority, addressGroup);
+      }
       TransportSet ts = new TransportSet(addressGroup, authority, userAgent,
           backoffPolicyProvider, transportFactory, scheduledExecutor, stopwatchSupplier,
           executor, new TransportSet.Callback() {
@@ -684,6 +700,25 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
     }
   }
 
+  private class ErroringInterimTransportImpl implements InterimTransport<ClientTransport> {
+    private final FailingClientTransport transport;
+
+    ErroringInterimTransportImpl(FailingClientTransport transport) {
+      this.transport = transport;
+    }
+
+    @Override
+    public ClientTransport transport() {
+      return transport;
+    }
+
+    @Override
+    public void closeWithRealTransports(Supplier<ClientTransport> realTransports) {}
+
+    @Override
+    public void closeWithError(Status error) {}
+  }
+
   private class InterimTransportImpl implements InterimTransport<ClientTransport> {
     private final DelayedClientTransport delayedTransport;
     private boolean closed;
@@ -707,15 +742,6 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
             inUseStateAggregator.updateObjectInUse(delayedTransport, inUse);
           }
         });
-      boolean savedShutdown;
-      synchronized (lock) {
-        delayedTransports.add(delayedTransport);
-        savedShutdown = shutdown;
-      }
-      if (savedShutdown) {
-        delayedTransport.setTransport(SHUTDOWN_TRANSPORT);
-        delayedTransport.shutdown();
-      }
     }
 
     @Override
@@ -807,4 +833,6 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
       return channel.newCall(methodDescriptor, callOptions);
     }
   }
+
+  private static class ManagedChannelImplLock {}
 }
