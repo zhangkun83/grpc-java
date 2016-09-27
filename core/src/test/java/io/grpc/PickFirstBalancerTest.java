@@ -44,6 +44,7 @@ import com.google.common.base.Supplier;
 import com.google.common.collect.Lists;
 
 import io.grpc.TransportManager.InterimTransport;
+import io.grpc.TransportManager.Subchannel;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -61,12 +62,14 @@ import java.util.List;
 @RunWith(JUnit4.class)
 public class PickFirstBalancerTest {
   private LoadBalancer<Transport> loadBalancer;
+  private NameResolver.Listener nameResolverListener;
 
   private List<ResolvedServerInfoGroup> servers;
   private EquivalentAddressGroup addressGroup;
 
   @Mock private TransportManager<Transport> mockTransportManager;
   @Mock private Transport mockTransport;
+  @Mock private Subchannel<Transport> mockSubchannel;
   @Mock private InterimTransport<Transport> mockInterimTransport;
   @Mock private Transport mockInterimTransportAsTransport;
   @Captor private ArgumentCaptor<Supplier<Transport>> transportSupplierCaptor;
@@ -76,6 +79,7 @@ public class PickFirstBalancerTest {
     MockitoAnnotations.initMocks(this);
     loadBalancer = PickFirstBalancerFactory.getInstance().newLoadBalancer(
         "fakeservice", mockTransportManager);
+    nameResolverListener = loadBalancer.getNameResolverListener();
     servers = Lists.newArrayList();
     List<ResolvedServerInfo> resolvedServerInfoList = Lists.newArrayList();
     for (int i = 0; i < 3; i++) {
@@ -85,7 +89,8 @@ public class PickFirstBalancerTest {
         resolvedServerInfoList).build();
     servers.add(resolvedServerInfoGroup);
     addressGroup = resolvedServerInfoGroup.toEquivalentAddressGroup();
-    when(mockTransportManager.getTransport(eq(addressGroup))).thenReturn(mockTransport);
+    when(mockTransportManager.createSubchannel(eq(addressGroup))).thenReturn(mockSubchannel);
+    when(mockSubchannel.getTransport()).thenReturn(mockTransport);
     when(mockTransportManager.createInterimTransport()).thenReturn(mockInterimTransport);
     when(mockInterimTransport.transport()).thenReturn(mockInterimTransportAsTransport);
   }
@@ -97,15 +102,16 @@ public class PickFirstBalancerTest {
     assertSame(mockInterimTransportAsTransport, t1);
     assertSame(mockInterimTransportAsTransport, t2);
     verify(mockTransportManager).createInterimTransport();
-    verify(mockTransportManager, never()).getTransport(any(EquivalentAddressGroup.class));
+    verify(mockTransportManager, never()).createSubchannel(any(EquivalentAddressGroup.class));
     verify(mockInterimTransport, times(2)).transport();
 
-    loadBalancer.handleResolvedAddresses(servers, Attributes.EMPTY);
+    nameResolverListener.onUpdate(servers, Attributes.EMPTY);
     verify(mockInterimTransport).closeWithRealTransports(transportSupplierCaptor.capture());
     for (int i = 0; i < 2; i++) {
       assertSame(mockTransport, transportSupplierCaptor.getValue().get());
     }
-    verify(mockTransportManager, times(2)).getTransport(eq(addressGroup));
+    verify(mockTransportManager).createSubchannel(eq(addressGroup));
+    verify(mockSubchannel, times(2)).getTransport();
     verifyNoMoreInteractions(mockTransportManager);
     verifyNoMoreInteractions(mockInterimTransport);
   }
@@ -117,15 +123,15 @@ public class PickFirstBalancerTest {
     assertSame(mockInterimTransportAsTransport, t1);
     assertSame(mockInterimTransportAsTransport, t2);
     verify(mockTransportManager).createInterimTransport();
-    verify(mockTransportManager, never()).getTransport(any(EquivalentAddressGroup.class));
+    verify(mockTransportManager, never()).createSubchannel(any(EquivalentAddressGroup.class));
     verify(mockInterimTransport, times(2)).transport();
 
-    loadBalancer.handleNameResolutionError(Status.UNAVAILABLE);
+    nameResolverListener.onError(Status.UNAVAILABLE);
     verify(mockInterimTransport).closeWithError(any(Status.class));
     // Ensure a shutdown after error closes without incident
     loadBalancer.shutdown();
     // Ensure a name resolution error after shutdown does nothing
-    loadBalancer.handleNameResolutionError(Status.UNAVAILABLE);
+    nameResolverListener.onError(Status.UNAVAILABLE);
     verifyNoMoreInteractions(mockInterimTransport);
   }
 
@@ -136,7 +142,7 @@ public class PickFirstBalancerTest {
     assertSame(mockInterimTransportAsTransport, t1);
     assertSame(mockInterimTransportAsTransport, t2);
     verify(mockTransportManager).createInterimTransport();
-    verify(mockTransportManager, never()).getTransport(any(EquivalentAddressGroup.class));
+    verify(mockTransportManager, never()).createSubchannel(any(EquivalentAddressGroup.class));
     verify(mockInterimTransport, times(2)).transport();
 
     loadBalancer.shutdown();
@@ -148,10 +154,11 @@ public class PickFirstBalancerTest {
 
   @Test
   public void pickAfterResolved() throws Exception {
-    loadBalancer.handleResolvedAddresses(servers, Attributes.EMPTY);
+    nameResolverListener.onUpdate(servers, Attributes.EMPTY);
     Transport t = loadBalancer.pickTransport(null);
     assertSame(mockTransport, t);
-    verify(mockTransportManager).getTransport(addressGroup);
+    verify(mockTransportManager).createSubchannel(addressGroup);
+    verify(mockSubchannel).getTransport();
     verifyNoMoreInteractions(mockTransportManager);
   }
 

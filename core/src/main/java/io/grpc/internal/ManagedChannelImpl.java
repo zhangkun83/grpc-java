@@ -46,6 +46,7 @@ import io.grpc.ClientCall;
 import io.grpc.ClientInterceptor;
 import io.grpc.ClientInterceptors;
 import io.grpc.CompressorRegistry;
+import io.grpc.ConnectivityState;
 import io.grpc.DecompressorRegistry;
 import io.grpc.EquivalentAddressGroup;
 import io.grpc.LoadBalancer;
@@ -56,7 +57,7 @@ import io.grpc.ResolvedServerInfoGroup;
 import io.grpc.Status;
 import io.grpc.TransportManager;
 import io.grpc.TransportManager.InterimTransport;
-import io.grpc.TransportManager.OobTransportProvider;
+import io.grpc.TransportManager.Subchannel;
 import io.grpc.internal.ClientCallImpl.ClientTransportProvider;
 
 import java.net.URI;
@@ -93,12 +94,8 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
 
   static final long IDLE_TIMEOUT_MILLIS_DISABLE = -1;
 
-  private static final ClientTransport SHUTDOWN_TRANSPORT =
+  private static final FailingClientTransport SHUTDOWN_TRANSPORT =
       new FailingClientTransport(Status.UNAVAILABLE.withDescription("Channel is shutdown"));
-
-  @VisibleForTesting
-  static final ClientTransport IDLE_MODE_TRANSPORT =
-      new FailingClientTransport(Status.INTERNAL.withDescription("Channel is in idle mode"));
 
   private final String target;
   private final NameResolver.Factory nameResolverFactory;
@@ -139,12 +136,10 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
   private LoadBalancer<ClientTransport> loadBalancer;
 
   /**
-   * Maps EquivalentAddressGroups to transports for that server. "lock" must be held when mutating.
+   * Active TransporSets.
    */
-  // Even though we set a concurrency level of 1, this is better than Collections.synchronizedMap
-  // because it doesn't need to acquire a lock for reads.
-  private final ConcurrentMap<EquivalentAddressGroup, TransportSet> transports =
-      new ConcurrentHashMap<EquivalentAddressGroup, TransportSet>(16, .75f, 1);
+  @GuardedBy("lock")
+  private final HashSet<TransportSet> transports = new HashSet<TransportSet>();
 
   /**
    * TransportSets that are shutdown (but not yet terminated) due to channel idleness or channel
@@ -200,7 +195,7 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
         loadBalancer = null;
         oldResolver = nameResolver;
         nameResolver = getNameResolver(target, nameResolverFactory, nameResolverParams);
-        transportsCopy.addAll(transports.values());
+        transportsCopy.addAll(transports);
         transports.clear();
         decommissionedTransports.addAll(transportsCopy);
       }
@@ -251,7 +246,8 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
     class NameResolverStartTask implements Runnable {
       @Override
       public void run() {
-        NameResolverListenerImpl listener = new NameResolverListenerImpl(balancer);
+        NameResolverListenerImpl listener =
+            new NameResolverListenerImpl(balancer.getNameResolverListener());
         // This may trigger quite a few non-trivial work in LoadBalancer and NameResolver,
         // we don't want to do it in the lock.
         try {
@@ -295,10 +291,6 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
     idleModeTimerFuture = scheduledExecutor.schedule(new LogExceptionRunnable(idleModeTimer),
         idleTimeoutMillis, TimeUnit.MILLISECONDS);
   }
-
-  @GuardedBy("lock")
-  private final HashSet<OobTransportProviderImpl> oobTransports =
-      new HashSet<OobTransportProviderImpl>();
 
   @GuardedBy("lock")
   private boolean shutdown;
@@ -413,8 +405,6 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
     ArrayList<TransportSet> transportsCopy = new ArrayList<TransportSet>();
     ArrayList<DelayedClientTransport> delayedTransportsCopy =
         new ArrayList<DelayedClientTransport>();
-    ArrayList<OobTransportProviderImpl> oobTransportsCopy =
-        new ArrayList<OobTransportProviderImpl>();
     LoadBalancer<ClientTransport> balancer;
     NameResolver resolver;
     synchronized (lock) {
@@ -426,11 +416,10 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
       scheduledExecutor = SharedResourceHolder.release(timerService, scheduledExecutor);
       maybeTerminateChannel();
       if (!terminated) {
-        transportsCopy.addAll(transports.values());
+        transportsCopy.addAll(transports);
         transports.clear();
         decommissionedTransports.addAll(transportsCopy);
         delayedTransportsCopy.addAll(delayedTransports);
-        oobTransportsCopy.addAll(oobTransports);
       }
       balancer = loadBalancer;
       resolver = nameResolver;
@@ -440,14 +429,12 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
       balancer.shutdown();
     }
     resolver.shutdown();
+    // TODO(zhangkun83): maybe not shutdown them, and make it clear that it's LoadBalancer's job
     for (TransportSet ts : transportsCopy) {
       ts.shutdown();
     }
     for (DelayedClientTransport transport : delayedTransportsCopy) {
       transport.shutdown();
-    }
-    for (OobTransportProviderImpl provider : oobTransportsCopy) {
-      provider.close();
     }
     if (log.isLoggable(Level.FINE)) {
       log.log(Level.FINE, "[{0}] Shutting down", getLogId());
@@ -473,12 +460,10 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
     shutdown();
     List<TransportSet> transportsCopy;
     List<DelayedClientTransport> delayedTransportsCopy;
-    List<OobTransportProviderImpl> oobTransportsCopy;
     synchronized (lock) {
-      transportsCopy = new ArrayList<TransportSet>(transports.values());
+      transportsCopy = new ArrayList<TransportSet>(transports);
       transportsCopy.addAll(decommissionedTransports);
       delayedTransportsCopy = new ArrayList<DelayedClientTransport>(delayedTransports);
-      oobTransportsCopy = new ArrayList<OobTransportProviderImpl>(oobTransports);
     }
     if (log.isLoggable(Level.FINE)) {
       log.log(Level.FINE, "[{0}] Shutting down now", getLogId());
@@ -489,9 +474,6 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
     }
     for (DelayedClientTransport transport : delayedTransportsCopy) {
       transport.shutdownNow(nowStatus);
-    }
-    for (OobTransportProviderImpl provider : oobTransportsCopy) {
-      provider.shutdownNow(nowStatus);
     }
     return this;
   }
@@ -570,7 +552,7 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
       return;
     }
     if (shutdown && transports.isEmpty() && decommissionedTransports.isEmpty()
-        && delayedTransports.isEmpty() && oobTransports.isEmpty()) {
+        && delayedTransports.isEmpty()) {
       if (log.isLoggable(Level.INFO)) {
         log.log(Level.INFO, "[{0}] Terminated", getLogId());
       }
@@ -587,72 +569,8 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
   @VisibleForTesting
   final TransportManager<ClientTransport> tm = new TransportManager<ClientTransport>() {
     @Override
-    public void updateRetainedTransports(Collection<EquivalentAddressGroup> addrs) {
-      // TODO(zhangkun83): warm-up new servers and discard removed servers.
-    }
-
-    @Override
-    public ClientTransport getTransport(final EquivalentAddressGroup addressGroup) {
-      checkNotNull(addressGroup, "addressGroup");
-      TransportSet ts = transports.get(addressGroup);
-      if (ts != null) {
-        return ts.obtainActiveTransport();
-      }
-      synchronized (lock) {
-        if (shutdown) {
-          return SHUTDOWN_TRANSPORT;
-        }
-        if (loadBalancer == null) {
-          return IDLE_MODE_TRANSPORT;
-        }
-        ts = transports.get(addressGroup);
-        if (ts == null) {
-          ts = new TransportSet(addressGroup, authority(), userAgent, loadBalancer,
-              backoffPolicyProvider, transportFactory, scheduledExecutor, stopwatchSupplier,
-              executor, new TransportSet.Callback() {
-                @Override
-                public void onTerminated(TransportSet ts) {
-                  synchronized (lock) {
-                    transports.remove(addressGroup);
-                    decommissionedTransports.remove(ts);
-                    maybeTerminateChannel();
-                  }
-                }
-
-                @Override
-                public void onAllAddressesFailed() {
-                  nameResolver.refresh();
-                }
-
-                @Override
-                public void onConnectionClosedByServer(Status status) {
-                  nameResolver.refresh();
-                }
-
-                @Override
-                public void onInUse(TransportSet ts) {
-                  inUseStateAggregator.updateObjectInUse(ts, true);
-                }
-
-                @Override
-                public void onNotInUse(TransportSet ts) {
-                  inUseStateAggregator.updateObjectInUse(ts, false);
-                }
-              });
-          if (log.isLoggable(Level.FINE)) {
-            log.log(Level.FINE, "[{0}] {1} created for {2}",
-                new Object[] {getLogId(), ts.getLogId(), addressGroup});
-          }
-          transports.put(addressGroup, ts);
-        }
-      }
-      return ts.obtainActiveTransport();
-    }
-
-    @Override
-    public Channel makeChannel(ClientTransport transport) {
-      return new SingleTransportChannel(
-          transport, executor, scheduledExecutor, authority());
+    public Subchannel<ClientTransport> createSubchannel(final EquivalentAddressGroup addressGroup) {
+      return createTransportSet(addressGroup, authority());
     }
 
     @Override
@@ -666,22 +584,71 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
     }
 
     @Override
-    public OobTransportProvider<ClientTransport> createOobTransportProvider(
-        EquivalentAddressGroup addressGroup, String authority) {
-      return new OobTransportProviderImpl(addressGroup, authority);
+    public ManagedChannel createOobChannel(EquivalentAddressGroup addressGroup, String authority) {
+      // TODO(zhangkun83): create a protective wrapper to prevent caller from downcasting to SubChannel
+      // and getting the transport.
+      return createTransportSet(addressGroup, authority);
     }
   };
+
+  private Subchannel<ClientTransport> createTransportSet(
+      final EquivalentAddressGroup addressGroup, String authority) {
+    checkNotNull(addressGroup, "addressGroup");
+    synchronized (lock) {
+      if (shutdown) {
+        return new ErroringSubChannel(SHUTDOWN_TRANSPORT, authority, addressGroup);
+      }
+      TransportSet ts = new TransportSet(addressGroup, authority, userAgent,
+          backoffPolicyProvider, transportFactory, scheduledExecutor, stopwatchSupplier,
+          executor, new TransportSet.Callback() {
+              @Override
+              public void onTerminated(TransportSet ts) {
+                synchronized (lock) {
+                  transports.remove(ts);
+                  decommissionedTransports.remove(ts);
+                  maybeTerminateChannel();
+                }
+              }
+
+              @Override
+              public void onAllAddressesFailed() {
+                nameResolver.refresh();
+              }
+
+              @Override
+              public void onConnectionClosedByServer(Status status) {
+                nameResolver.refresh();
+              }
+
+              @Override
+              public void onInUse(TransportSet ts) {
+                inUseStateAggregator.updateObjectInUse(ts, true);
+              }
+
+              @Override
+              public void onNotInUse(TransportSet ts) {
+                inUseStateAggregator.updateObjectInUse(ts, false);
+              }
+            });
+      if (log.isLoggable(Level.FINE)) {
+        log.log(Level.FINE, "[{0}] {1} created for {2}",
+            new Object[] {getLogId(), ts.getLogId(), addressGroup});
+      }
+      transports.add(ts);
+      return ts;
+    }
+  }
 
   @Override
   public String getLogId() {
     return GrpcUtil.getLogId(this);
   }
 
-  private class NameResolverListenerImpl implements NameResolver.Listener {
-    final LoadBalancer<ClientTransport> balancer;
+  private class NameResolverListenerImpl extends NameResolver.Listener {
+    final NameResolver.Listener listenerFromLoadBalancer;
 
-    NameResolverListenerImpl(LoadBalancer<ClientTransport> balancer) {
-      this.balancer = balancer;
+    NameResolverListenerImpl(NameResolver.Listener listenerFromLoadBalancer) {
+      this.listenerFromLoadBalancer = listenerFromLoadBalancer;
     }
 
     @Override
@@ -692,11 +659,11 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
       }
 
       try {
-        balancer.handleResolvedAddresses(servers, config);
+        listenerFromLoadBalancer.onUpdate(servers, config);
       } catch (Throwable e) {
         // It must be a bug! Push the exception back to LoadBalancer in the hope that it may be
         // propagated to the application.
-        balancer.handleNameResolutionError(Status.INTERNAL.withCause(e)
+        listenerFromLoadBalancer.onError(Status.INTERNAL.withCause(e)
             .withDescription("Thrown from handleResolvedAddresses(): " + e));
       }
     }
@@ -704,7 +671,7 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
     @Override
     public void onError(Status error) {
       checkArgument(!error.isOk(), "the error status must not be OK");
-      balancer.handleNameResolutionError(error);
+      listenerFromLoadBalancer.onError(error);
     }
   }
 
@@ -760,56 +727,75 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
     }
   }
 
-  private class OobTransportProviderImpl implements OobTransportProvider<ClientTransport> {
-    private final TransportSet transportSet;
-    private final ClientTransport transport;
+  @VisibleForTesting
+  class ErroringSubChannel extends Subchannel<ClientTransport> {
+    final FailingClientTransport transport;
+    final SingleTransportChannel channel;
+    final EquivalentAddressGroup addressGroup;
 
-    OobTransportProviderImpl(EquivalentAddressGroup addressGroup, String authority) {
-      synchronized (lock) {
-        if (shutdown) {
-          transportSet = null;
-          transport = SHUTDOWN_TRANSPORT;
-        } else if (loadBalancer == null) {
-          transportSet = null;
-          transport = IDLE_MODE_TRANSPORT;
-        } else {
-          transport = null;
-          transportSet = new TransportSet(addressGroup, authority, userAgent, loadBalancer,
-              backoffPolicyProvider, transportFactory, scheduledExecutor, stopwatchSupplier,
-              executor, new TransportSet.Callback() {
-                @Override
-                public void onTerminated(TransportSet ts) {
-                  synchronized (lock) {
-                    oobTransports.remove(OobTransportProviderImpl.this);
-                    maybeTerminateChannel();
-                  }
-                }
-              });
-          oobTransports.add(this);
-        }
+    ErroringSubChannel(FailingClientTransport transport, String authority,
+        EquivalentAddressGroup addressGroup) {
+      this.transport = transport;
+      this.channel = new SingleTransportChannel(transport, executor, scheduledExecutor, authority);
+      this.addressGroup = addressGroup;
+    }
+
+    @Override
+    public ClientTransport getTransport() {
+      return transport;
+    }
+
+    @Override
+    public EquivalentAddressGroup getAddresses() {
+      return addressGroup;
+    }
+
+    @Override
+    public ManagedChannel shutdown() {
+      return this;
+    }
+
+    @Override
+    public boolean isShutdown() {
+      return true;
+    }
+
+    @Override
+    public boolean isTerminated() {
+      return true;
+    }
+
+    @Override
+    public ManagedChannel shutdownNow() {
+      return this;
+    }
+
+    @Override
+    public boolean awaitTermination(long timeout, TimeUnit unit) {
+      return true;
+    }
+
+    @Override
+    public ConnectivityState getState(boolean requestConnection) {
+      return ConnectivityState.SHUTDOWN;
+    }
+
+    @Override
+    public void notifyWhenStateChanged(ConnectivityState source, Runnable callback) {
+      if (source != getState(false)) {
+        executor.execute(callback);
       }
     }
 
     @Override
-    public ClientTransport get() {
-      if (transport != null) {
-        return transport;
-      } else {
-        return transportSet.obtainActiveTransport();
-      }
+    public String authority() {
+      return channel.authority();
     }
 
     @Override
-    public void close() {
-      if (transportSet != null) {
-        transportSet.shutdown();
-      }
-    }
-
-    void shutdownNow(Status reason) {
-      if (transportSet != null) {
-        transportSet.shutdownNow(reason);
-      }
+    public <RequestT, ResponseT> ClientCall<RequestT, ResponseT> newCall(
+        MethodDescriptor<RequestT, ResponseT> methodDescriptor, CallOptions callOptions) {
+      return channel.newCall(methodDescriptor, callOptions);
     }
   }
 }

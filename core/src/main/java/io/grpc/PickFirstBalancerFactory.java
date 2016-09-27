@@ -34,6 +34,7 @@ package io.grpc;
 import com.google.common.base.Supplier;
 
 import io.grpc.TransportManager.InterimTransport;
+import io.grpc.TransportManager.Subchannel;
 
 import java.net.SocketAddress;
 import java.util.ArrayList;
@@ -67,10 +68,11 @@ public final class PickFirstBalancerFactory extends LoadBalancer.Factory {
     private static final Status SHUTDOWN_STATUS =
         Status.UNAVAILABLE.augmentDescription("PickFirstBalancer has shut down");
 
-    private final Object lock = new Object();
+    private final PickFirstBalancerLock lock = new PickFirstBalancerLock();
 
-    /** "lock" must be held when mutating. */
-    private volatile EquivalentAddressGroup addresses;
+    private volatile Subchannel<T> subchannel;
+    @GuardedBy("lock")
+    private EquivalentAddressGroup addresses;
     @GuardedBy("lock")
     private InterimTransport<T> interimTransport;
     @GuardedBy("lock")
@@ -80,92 +82,113 @@ public final class PickFirstBalancerFactory extends LoadBalancer.Factory {
 
     private final TransportManager<T> tm;
 
+    private final NameResolver.Listener nameResolverListener = new NameResolver.Listener() {
+        @Override
+        public void onUpdate(List<ResolvedServerInfoGroup> updatedServers, Attributes attributes) {
+          InterimTransport<T> savedInterimTransport;
+          EquivalentAddressGroup newAddresses;
+          Subchannel<T> oldSubchannel;
+          final Subchannel<T> newSubchannel;
+          synchronized (lock) {
+            if (closed) {
+              return;
+            }
+            newAddresses = resolvedServerInfoGroupsToEquivalentAddressGroup(updatedServers);
+            if (newAddresses.equals(addresses)) {
+              return;
+            }
+            oldSubchannel = subchannel;
+            addresses = newAddresses;
+            nameResolutionError = null;
+            savedInterimTransport = interimTransport;
+            interimTransport = null;
+          }
+          // From the fear for deadlocks, create and close subchannels outside of the lock
+          newSubchannel = tm.createSubchannel(newAddresses);
+          if (oldSubchannel != null) {
+            oldSubchannel.shutdown();
+          }
+          subchannel = newSubchannel;
+          if (savedInterimTransport != null) {
+            savedInterimTransport.closeWithRealTransports(new Supplier<T>() {
+                @Override public T get() {
+                  return newSubchannel.getTransport();
+                }
+              });
+          }
+        }
+
+        @Override
+        public void onError(Status error) {
+          InterimTransport<T> savedInterimTransport;
+          synchronized (lock) {
+            if (closed) {
+              return;
+            }
+            error = error.augmentDescription("Name resolution failed");
+            savedInterimTransport = interimTransport;
+            interimTransport = null;
+            nameResolutionError = error;
+          }
+          if (savedInterimTransport != null) {
+            savedInterimTransport.closeWithError(error);
+          }
+        }
+      };
+
     private PickFirstBalancer(TransportManager<T> tm) {
       this.tm = tm;
     }
 
     @Override
+    public NameResolver.Listener getNameResolverListener() {
+      return nameResolverListener;
+    }
+
+    @Override
     public T pickTransport(Attributes affinity) {
-      EquivalentAddressGroup addressesCopy = addresses;
-      if (addressesCopy != null) {
-        return tm.getTransport(addressesCopy);
-      }
-      synchronized (lock) {
-        if (closed) {
-          return tm.createFailingTransport(SHUTDOWN_STATUS);
-        }
-        addressesCopy = addresses;
-        if (addressesCopy == null) {
-          if (nameResolutionError != null) {
-            return tm.createFailingTransport(nameResolutionError);
+      Subchannel<T> savedSubchannel = subchannel;
+      if (savedSubchannel == null) {
+        synchronized (lock) {
+          if (closed) {
+            return tm.createFailingTransport(SHUTDOWN_STATUS);
           }
-          if (interimTransport == null) {
-            interimTransport = tm.createInterimTransport();
-          }
-          return interimTransport.transport();
-        }
-      }
-      return tm.getTransport(addressesCopy);
-    }
-
-    @Override
-    public void handleResolvedAddresses(List<ResolvedServerInfoGroup> updatedServers,
-        Attributes attributes) {
-      InterimTransport<T> savedInterimTransport;
-      final EquivalentAddressGroup newAddresses;
-      synchronized (lock) {
-        if (closed) {
-          return;
-        }
-        newAddresses = resolvedServerInfoGroupsToEquivalentAddressGroup(updatedServers);
-        if (newAddresses.equals(addresses)) {
-          return;
-        }
-        addresses = newAddresses;
-        nameResolutionError = null;
-        savedInterimTransport = interimTransport;
-        interimTransport = null;
-      }
-      if (savedInterimTransport != null) {
-        savedInterimTransport.closeWithRealTransports(new Supplier<T>() {
-            @Override public T get() {
-              return tm.getTransport(newAddresses);
+          if (subchannel == null) {
+            if (nameResolutionError != null) {
+              return tm.createFailingTransport(nameResolutionError);
             }
-          });
-      }
-    }
-
-    @Override
-    public void handleNameResolutionError(Status error) {
-      InterimTransport<T> savedInterimTransport;
-      synchronized (lock) {
-        if (closed) {
-          return;
+            if (interimTransport == null) {
+              interimTransport = tm.createInterimTransport();
+            }
+            return interimTransport.transport();
+          } else {
+            savedSubchannel = subchannel;
+          }
         }
-        error = error.augmentDescription("Name resolution failed");
-        savedInterimTransport = interimTransport;
-        interimTransport = null;
-        nameResolutionError = error;
       }
-      if (savedInterimTransport != null) {
-        savedInterimTransport.closeWithError(error);
-      }
+      return savedSubchannel.getTransport();
     }
 
     @Override
     public void shutdown() {
       InterimTransport<T> savedInterimTransport;
+      Subchannel<T> savedSubchannel;
       synchronized (lock) {
         if (closed) {
           return;
         }
         closed = true;
         addresses = null;
+        savedSubchannel = subchannel;
+        subchannel = null;
         savedInterimTransport = interimTransport;
         interimTransport = null;
       }
       if (savedInterimTransport != null) {
         savedInterimTransport.closeWithError(SHUTDOWN_STATUS);
+      }
+      if (savedSubchannel != null) {
+        savedSubchannel.shutdown();
       }
     }
 
@@ -183,4 +206,6 @@ public final class PickFirstBalancerFactory extends LoadBalancer.Factory {
       return new EquivalentAddressGroup(addrs);
     }
   }
+
+  private static class PickFirstBalancerLock { }
 }

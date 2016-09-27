@@ -36,22 +36,20 @@ import com.google.common.base.Supplier;
 import java.util.Collection;
 
 /**
- * Manages transport life-cycles and provide ready-to-use transports.
+ * A facade of the channel's connection creation and management capabilities, provided to {@link
+ * LoadBalancer}s.
  */
 @ExperimentalApi("https://github.com/grpc/grpc-java/issues/1781")
 public abstract class TransportManager<T> {
   /**
-   * Advises this {@code TransportManager} to retain transports only to these servers, for warming
-   * up connections and discarding unused connections.
-   */
-  public abstract void updateRetainedTransports(Collection<EquivalentAddressGroup> addrs);
-
-  /**
-   * Returns a transport for any of the addresses from the given address group.
+   * Creates a {@link Subchannel} for the given address group.
    *
-   * <p>Never returns {@code null}
+   * <p>Calls made by LoadBalancer directly on a Subchannel will not go through the interceptors
+   * on the top-level channel.
+   *
+   * <p>The LoadBalancer should shut it down when no longer used.
    */
-  public abstract T getTransport(EquivalentAddressGroup addressGroup);
+  public abstract Subchannel<T> createSubchannel(EquivalentAddressGroup addressGroup);
 
   /**
    * Creates a transport that would fail all RPCs with the given error.
@@ -65,22 +63,22 @@ public abstract class TransportManager<T> {
    * <p>This method is typically used in lieu of {@link #getTransport} before server addresses are
    * known.
    *
-   * <p>The returned interim transport is tracked by this {@link TransportManager}. You must call
-   * {@link InterimTransport#closeWithRealTransports} or {@link InterimTransport#closeWithError}
-   * when it's no longer used, so that {@link TransportManager} can get rid of it.
+   * <p>The LoadBalancer should shut it down when no longer used.
    */
   public abstract InterimTransport<T> createInterimTransport();
 
   /**
-   * Creates an {@link OobTransportProvider} with a specific authority.
+   * Creates a channel for out-of-band communications, usually used by a load-balancer that needs to
+   * communicate with an external load-balancing service which is under an authority different from
+   * what the channel is associated with.
+   *
+   * <p>Calls made by LoadBalancer directly on this OOB channel will not go through the interceptors
+   * on the top-level channel.
+   *
+   * <p>The LoadBalancer should shut it down when no longer used.
    */
-  public abstract OobTransportProvider<T> createOobTransportProvider(
+  public abstract ManagedChannel createOobChannel(
       EquivalentAddressGroup addressGroup, String authority);
-
-  /**
-   * Returns a channel that uses {@code transport}; useful for issuing RPCs on a transport.
-   */
-  public abstract Channel makeChannel(T transport);
 
   /**
    * A transport provided as a temporary holder of new requests, which will be eventually
@@ -111,19 +109,17 @@ public abstract class TransportManager<T> {
   }
 
   /**
-   * A provider for out-of-band transports, usually used by a load-balancer that needs to
-   * communicate with an external load-balancing service which is under an authority different from
-   * what the channel is associated with.
+   * A subchannel that manages the transports for a {@link EquivalentAddressGroup}.
    */
-  public interface OobTransportProvider<T> {
+  public static abstract class Subchannel<T> extends ManagedChannel {
     /**
-     * Returns an OOB transport.
+     * Returns a usable transport.
      */
-    T get();
+    public abstract T getTransport();
 
     /**
-     * Closes the provider and shuts down all associated transports.
+     * The address group with which this subchannel is associated.
      */
-    void close();
+    public abstract EquivalentAddressGroup getAddresses();
   }
 }

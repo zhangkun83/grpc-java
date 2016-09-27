@@ -43,6 +43,7 @@ import io.grpc.LoadBalancer;
 import io.grpc.ManagedChannel;
 import io.grpc.MethodDescriptor;
 import io.grpc.Status;
+import io.grpc.TransportManager.Subchannel;
 import io.grpc.internal.ClientCallImpl.ClientTransportProvider;
 
 import java.net.SocketAddress;
@@ -66,7 +67,7 @@ import javax.annotation.concurrent.ThreadSafe;
  * Transports for a single {@link SocketAddress}.
  */
 @ThreadSafe
-final class TransportSet extends ManagedChannel implements WithLogId {
+final class TransportSet extends Subchannel<ClientTransport> implements WithLogId {
   private static final Logger log = Logger.getLogger(TransportSet.class.getName());
   private static final ClientTransport SHUTDOWN_TRANSPORT =
       new FailingClientTransport(Status.UNAVAILABLE.withDescription("TransportSet is shutdown"));
@@ -135,8 +136,6 @@ final class TransportSet extends ManagedChannel implements WithLogId {
   @Nullable
   private ConnectionClientTransport pendingTransport;
 
-  private final LoadBalancer<ClientTransport> loadBalancer;
-
   @GuardedBy("lock")
   private boolean shutdown;
 
@@ -161,13 +160,12 @@ final class TransportSet extends ManagedChannel implements WithLogId {
       new ConnectivityStateManager(ConnectivityState.IDLE);
 
   TransportSet(EquivalentAddressGroup addressGroup, String authority, String userAgent,
-      LoadBalancer<ClientTransport> loadBalancer, BackoffPolicy.Provider backoffPolicyProvider,
+      BackoffPolicy.Provider backoffPolicyProvider,
       ClientTransportFactory transportFactory, ScheduledExecutorService scheduledExecutor,
       Supplier<Stopwatch> stopwatchSupplier, Executor appExecutor, Callback callback) {
     this.addressGroup = Preconditions.checkNotNull(addressGroup, "addressGroup");
     this.authority = authority;
     this.userAgent = userAgent;
-    this.loadBalancer = loadBalancer;
     this.backoffPolicyProvider = backoffPolicyProvider;
     this.transportFactory = transportFactory;
     this.scheduledExecutor = scheduledExecutor;
@@ -176,12 +174,8 @@ final class TransportSet extends ManagedChannel implements WithLogId {
     this.callback = callback;
   }
 
-  /**
-   * Returns the active transport that will be used to create new streams.
-   *
-   * <p>Never returns {@code null}.
-   */
-  final ClientTransport obtainActiveTransport() {
+  @Override
+  public ClientTransport getTransport() {
     ClientTransport savedTransport = activeTransport;
     if (savedTransport != null) {
       return savedTransport;
@@ -207,6 +201,11 @@ final class TransportSet extends ManagedChannel implements WithLogId {
       runnable.run();
     }
     return savedTransport;
+  }
+
+  @Override
+  public EquivalentAddressGroup getAddresses() {
+    return addressGroup;
   }
 
   @CheckReturnValue
@@ -364,7 +363,7 @@ final class TransportSet extends ManagedChannel implements WithLogId {
         new ClientTransportProvider() {
           @Override
           public ClientTransport get(CallOptions callOptions) {
-            return obtainActiveTransport();
+            return getTransport();
           }
         },
         scheduledExecutor);
@@ -400,7 +399,7 @@ final class TransportSet extends ManagedChannel implements WithLogId {
         connect = stateManager.getState() == ConnectivityState.IDLE;
       }
       if (connect) {
-        obtainActiveTransport();
+        getTransport();
       }
     }
     synchronized (lock) {
@@ -500,7 +499,6 @@ final class TransportSet extends ManagedChannel implements WithLogId {
         // See comments in the synchronized block above on why we shutdown here.
         transport.shutdown();
       }
-      loadBalancer.handleTransportReady(addressGroup);
     }
 
     @Override
@@ -542,7 +540,6 @@ final class TransportSet extends ManagedChannel implements WithLogId {
       if (runnable != null) {
         runnable.run();
       }
-      loadBalancer.handleTransportShutdown(addressGroup, s);
       if (allAddressesFailed) {
         callback.onAllAddressesFailed();
       }

@@ -31,6 +31,8 @@
 
 package io.grpc.util;
 
+import static com.google.common.base.Preconditions.checkState;
+
 import com.google.common.base.Supplier;
 
 import io.grpc.Attributes;
@@ -40,11 +42,14 @@ import io.grpc.LoadBalancer;
 import io.grpc.NameResolver;
 import io.grpc.ResolvedServerInfoGroup;
 import io.grpc.Status;
+import io.grpc.TransportManager.Subchannel;
 import io.grpc.TransportManager;
 import io.grpc.TransportManager.InterimTransport;
-import io.grpc.internal.RoundRobinServerList;
+import io.grpc.internal.RoundRobinSubchannelList;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import javax.annotation.concurrent.GuardedBy;
 
@@ -72,14 +77,18 @@ public final class RoundRobinLoadBalancerFactory extends LoadBalancer.Factory {
     return new RoundRobinLoadBalancer<T>(tm);
   }
 
-  private static class RoundRobinLoadBalancer<T> extends LoadBalancer<T> {
+  private static final class RoundRobinLoadBalancer<T> extends LoadBalancer<T> {
     private static final Status SHUTDOWN_STATUS =
         Status.UNAVAILABLE.augmentDescription("RoundRobinLoadBalancer has shut down");
 
-    private final Object lock = new Object();
+    private final RoundRobinLoadBalancerLock lock = new RoundRobinLoadBalancerLock();
 
     @GuardedBy("lock")
-    private RoundRobinServerList<T> addresses;
+    private final HashMap<EquivalentAddressGroup, SubchannelState<T>> subchannels =
+        new HashMap<EquivalentAddressGroup, SubchannelState<T>>();
+
+    private volatile RoundRobinSubchannelList<T> roundRobinList;
+
     @GuardedBy("lock")
     private InterimTransport<T> interimTransport;
     @GuardedBy("lock")
@@ -89,96 +98,171 @@ public final class RoundRobinLoadBalancerFactory extends LoadBalancer.Factory {
 
     private final TransportManager<T> tm;
 
+    private final NameResolver.Listener nameResolverListener = new NameResolver.Listener() {
+      @Override
+      public void onUpdate(List<ResolvedServerInfoGroup> updatedServers,
+          Attributes attributes) {
+        List<EquivalentAddressGroup> updatedAddressGroupList =
+            new ArrayList<EquivalentAddressGroup>();
+        HashSet<EquivalentAddressGroup> updatedAddressGroupSet =
+            new HashSet<EquivalentAddressGroup>();
+        HashSet<EquivalentAddressGroup> newAddressGroupSet =
+            new HashSet<EquivalentAddressGroup>();
+        HashSet<Subchannel<T>> subchannelsToBeRemoved = new HashSet<Subchannel<T>>();
+        final RoundRobinSubchannelList<T> savedRoundRobinList;
+        InterimTransport<T> savedInterimTransport;
+
+        // Find out the added and removed subchannels
+        synchronized (lock) {
+          if (closed) {
+            return;
+          }
+          for (ResolvedServerInfoGroup serverInfoGroup : updatedServers) {
+            EquivalentAddressGroup addressGroup = serverInfoGroup.toEquivalentAddressGroup();
+            if (!subchannels.containsKey(addressGroup)) {
+              newAddressGroupSet.add(addressGroup);
+            }
+            updatedAddressGroupList.add(addressGroup);
+            updatedAddressGroupSet.add(addressGroup);
+          }
+          for (SubchannelState<T> subchannel : subchannels.values()) {
+            if (!updatedAddressGroupSet.contains(subchannel.subchannel.getAddresses())) {
+              subchannelsToBeRemoved.add(subchannel.subchannel);
+            }
+          }
+        }
+
+        // From the fear for deadlocks, create and close subchannels outside of the lock
+        ArrayList<SubchannelState<T>> newSubchannels = new ArrayList<SubchannelState<T>>();
+        for (EquivalentAddressGroup addressGroup : newAddressGroupSet) {
+          newSubchannels.add(new SubchannelState<T>(tm.createSubchannel(addressGroup)));
+        }
+        for (Subchannel<T> subchannel : subchannelsToBeRemoved) {
+          subchannel.shutdown();
+        }
+
+        // Update states
+        synchronized (lock) {
+          if (closed) {
+            // I lost a race to shutdown().  All subchannels will be shutdown by the top-level
+            // channel.
+            return;
+          }
+          for (SubchannelState<T> subchannel : newSubchannels) {
+            checkState(subchannels.put(subchannel.subchannel.getAddresses(), subchannel) == null,
+                "Subchannel for %s already exists", subchannel.subchannel.getAddresses());
+          }
+          for (Subchannel<T> subchannel : subchannelsToBeRemoved) {
+            checkState(subchannels.remove(subchannel.getAddresses()) != null,
+                "Subchannel to be removed for %s is missing", subchannel.getAddresses());
+          }
+          // Build the new round-robin list
+          RoundRobinSubchannelList.Builder<T> listBuilder =
+              new RoundRobinSubchannelList.Builder<T>(tm);
+          for (EquivalentAddressGroup addressGroup : updatedAddressGroupList) {
+            SubchannelState<T> subchannel = subchannels.get(addressGroup);
+            checkState(subchannel != null, "Subchannel for %s is missing", addressGroup);
+            listBuilder.add(subchannel.subchannel);
+          }
+          roundRobinList = listBuilder.build();
+          savedRoundRobinList = roundRobinList;
+          nameResolutionError = null;
+          savedInterimTransport = interimTransport;
+          interimTransport = null;
+        }
+
+        if (savedInterimTransport != null) {
+          savedInterimTransport.closeWithRealTransports(new Supplier<T>() {
+              @Override public T get() {
+                return savedRoundRobinList.getNextTransport();
+              }
+            });
+        }
+      }
+
+      @Override
+      public void onError(Status error) {
+        InterimTransport<T> savedInterimTransport;
+        synchronized (lock) {
+          if (closed) {
+            return;
+          }
+          error = error.augmentDescription("Name resolution failed");
+          savedInterimTransport = interimTransport;
+          interimTransport = null;
+          nameResolutionError = error;
+        }
+        if (savedInterimTransport != null) {
+          savedInterimTransport.closeWithError(error);
+        }
+      }
+    };
+
     private RoundRobinLoadBalancer(TransportManager<T> tm) {
       this.tm = tm;
     }
 
     @Override
     public T pickTransport(Attributes affinity) {
-      final RoundRobinServerList<T> addressesCopy;
-      synchronized (lock) {
-        if (closed) {
-          return tm.createFailingTransport(SHUTDOWN_STATUS);
-        }
-        if (addresses == null) {
-          if (nameResolutionError != null) {
-            return tm.createFailingTransport(nameResolutionError);
+      RoundRobinSubchannelList<T> savedRoundRobinList = roundRobinList;
+      if (savedRoundRobinList == null) {
+        synchronized (lock) {
+          if (closed) {
+            return tm.createFailingTransport(SHUTDOWN_STATUS);
           }
-          if (interimTransport == null) {
-            interimTransport = tm.createInterimTransport();
-          }
-          return interimTransport.transport();
-        }
-        addressesCopy = addresses;
-      }
-      return addressesCopy.getTransportForNextServer();
-    }
-
-    @Override
-    public void handleResolvedAddresses(List<ResolvedServerInfoGroup> updatedServers,
-        Attributes attributes) {
-      final InterimTransport<T> savedInterimTransport;
-      final RoundRobinServerList<T> addressesCopy;
-      synchronized (lock) {
-        if (closed) {
-          return;
-        }
-        addresses = new RoundRobinServerList.Builder<T>(tm).addAll(
-            resolvedServerInfoGroupToEquivalentAddressGroup(updatedServers)).build();
-        addressesCopy = addresses;
-        nameResolutionError = null;
-        savedInterimTransport = interimTransport;
-        interimTransport = null;
-      }
-      if (savedInterimTransport != null) {
-        savedInterimTransport.closeWithRealTransports(new Supplier<T>() {
-            @Override public T get() {
-              return addressesCopy.getTransportForNextServer();
+          if (roundRobinList == null) {
+            if (nameResolutionError != null) {
+              return tm.createFailingTransport(nameResolutionError);
             }
-          });
+            if (interimTransport == null) {
+              interimTransport = tm.createInterimTransport();
+            }
+            return interimTransport.transport();
+          } else {
+            savedRoundRobinList = roundRobinList;
+          }
+        }
       }
+      return savedRoundRobinList.getNextTransport();
     }
 
     @Override
-    public void handleNameResolutionError(Status error) {
-      InterimTransport<T> savedInterimTransport;
-      synchronized (lock) {
-        if (closed) {
-          return;
-        }
-        error = error.augmentDescription("Name resolution failed");
-        savedInterimTransport = interimTransport;
-        interimTransport = null;
-        nameResolutionError = error;
-      }
-      if (savedInterimTransport != null) {
-        savedInterimTransport.closeWithError(error);
-      }
+    public NameResolver.Listener getNameResolverListener() {
+      return nameResolverListener;
     }
 
     @Override
     public void shutdown() {
       InterimTransport<T> savedInterimTransport;
+      ArrayList<SubchannelState<T>> savedSubchannels;
       synchronized (lock) {
         if (closed) {
           return;
         }
         closed = true;
         savedInterimTransport = interimTransport;
+        savedSubchannels = new ArrayList<SubchannelState<T>>(subchannels.values());
         interimTransport = null;
+        roundRobinList = null;
       }
       if (savedInterimTransport != null) {
         savedInterimTransport.closeWithError(SHUTDOWN_STATUS);
       }
-    }
-
-    private static List<EquivalentAddressGroup> resolvedServerInfoGroupToEquivalentAddressGroup(
-        List<ResolvedServerInfoGroup> groupList) {
-      List<EquivalentAddressGroup> addrs = new ArrayList<EquivalentAddressGroup>(groupList.size());
-      for (ResolvedServerInfoGroup group : groupList) {
-        addrs.add(group.toEquivalentAddressGroup());
+      for (SubchannelState<T> subchannel : savedSubchannels) {
+        subchannel.subchannel.shutdown();
       }
-      return addrs;
     }
   }
+
+  private static class SubchannelState<T> {
+    final Subchannel<T> subchannel;
+    boolean healthy = true;
+
+    SubchannelState(Subchannel<T> subchannel) {
+      this.subchannel = subchannel;
+    }
+  }
+
+  private static class RoundRobinLoadBalancerLock { }
+
 }

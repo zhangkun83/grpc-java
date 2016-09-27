@@ -66,34 +66,9 @@ public abstract class LoadBalancer<T> {
   public void shutdown() { }
 
   /**
-   * Handles newly resolved server groups and metadata attributes from name resolution system.
-   * {@code servers} contained in {@link ResolvedServerInfoGroup} should be considered equivalent
-   * but may be flattened into a single list if needed.
-   *
-   * <p>Implementations should not modify the given {@code servers}.
-   *
-   * @param servers the resolved server addresses, never empty.
-   * @param attributes extra metadata from naming system.
+   * Returns a listener that receives name resolution results.
    */
-  public void handleResolvedAddresses(List<ResolvedServerInfoGroup> servers,
-      Attributes attributes) { }
-
-  /**
-   * Handles an error from the name resolution system.
-   *
-   * @param error a non-OK status
-   */
-  public void handleNameResolutionError(Status error) { }
-
-  /**
-   * Called when a transport is fully connected and ready to accept traffic.
-   */
-  public void handleTransportReady(EquivalentAddressGroup addressGroup) { }
-
-  /**
-   * Called when a transport is shutting down.
-   */
-  public void handleTransportShutdown(EquivalentAddressGroup addressGroup, Status s) { }
+  public abstract NameResolver.Listener getNameResolverListener();
 
   public abstract static class Factory {
     /**

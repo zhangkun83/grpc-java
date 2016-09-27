@@ -33,9 +33,9 @@ package io.grpc.internal;
 
 import com.google.common.annotations.VisibleForTesting;
 
-import io.grpc.EquivalentAddressGroup;
 import io.grpc.Status;
 import io.grpc.TransportManager;
+import io.grpc.TransportManager.Subchannel;
 
 import java.net.SocketAddress;
 import java.util.ArrayList;
@@ -50,44 +50,35 @@ import javax.annotation.concurrent.NotThreadSafe;
 import javax.annotation.concurrent.ThreadSafe;
 
 /**
- * Manages a list of server addresses to round-robin on.
+ * Manages a list of subchannels to round-robin on.
  */
 @ThreadSafe
-public class RoundRobinServerList<T> {
+public class RoundRobinSubchannelList<T> {
   private final TransportManager<T> tm;
-  private final List<EquivalentAddressGroup> list;
-  private final Iterator<EquivalentAddressGroup> cyclingIter;
+  private final List<Subchannel<T>> list;
+  private final Iterator<Subchannel<T>> cyclingIter;
   private final T requestDroppingTransport;
 
-  private RoundRobinServerList(TransportManager<T> tm, List<EquivalentAddressGroup> list) {
+  private RoundRobinSubchannelList(TransportManager<T> tm, List<Subchannel<T>> list) {
     this.tm = tm;
     this.list = list;
-    this.cyclingIter = new CycleIterator<EquivalentAddressGroup>(list);
+    this.cyclingIter = new CycleIterator<Subchannel<T>>(list);
     this.requestDroppingTransport =
       tm.createFailingTransport(Status.UNAVAILABLE.withDescription("Throttled by LB"));
   }
 
   /**
-   * Returns the next transport in the list of servers.
-   *
-   * @return the next transport
+   * Returns the transport of the next subchannel.
    */
-  public T getTransportForNextServer() {
-    EquivalentAddressGroup currentServer;
+  public T getNextTransport() {
+    Subchannel<T> next;
     synchronized (cyclingIter) {
-      // TODO(zhangkun83): receive transportShutdown and transportReady events, then skip addresses
-      // that have been failing.
-      currentServer = cyclingIter.next();
+      next = cyclingIter.next();
     }
-    if (currentServer == null) {
+    if (next == null) {
       return requestDroppingTransport;
     }
-    return tm.getTransport(currentServer);
-  }
-
-  @VisibleForTesting
-  public List<EquivalentAddressGroup> getList() {
-    return list;
+    return next.getTransport();
   }
 
   public int size() {
@@ -96,7 +87,7 @@ public class RoundRobinServerList<T> {
 
   @NotThreadSafe
   public static class Builder<T> {
-    private final List<EquivalentAddressGroup> list = new ArrayList<EquivalentAddressGroup>();
+    private final List<Subchannel<T>> list = new ArrayList<Subchannel<T>>();
     private final TransportManager<T> tm;
 
     public Builder(TransportManager<T> tm) {
@@ -104,36 +95,20 @@ public class RoundRobinServerList<T> {
     }
 
     /**
-     * Adds a server to the list, or {@code null} for a drop entry.
-     */
-    public Builder<T> addSocketAddress(@Nullable SocketAddress address) {
-      list.add(new EquivalentAddressGroup(address));
-      return this;
-    }
-
-    /**
-     * Adds a address group to the list.
+     * Adds a subchannel to the list, or {@code null} for inserting a dropping token.  A dropping
+     * token is a pseudo subchannel that will always fail the request, used as a throttling
+     * mechanism.
      *
      * @param addresses the addresses to add
      */
-    public Builder<T> add(EquivalentAddressGroup addresses) {
+    public Builder<T> add(@Nullable Subchannel<T> addresses) {
       list.add(addresses);
       return this;
     }
 
-    /**
-     * Adds a list of address groups.
-     *
-     * @param addresses the list of addresses group.
-     */
-    public Builder<T> addAll(Collection<EquivalentAddressGroup> addresses) {
-      list.addAll(addresses);
-      return this;
-    }
-
-    public RoundRobinServerList<T> build() {
-      return new RoundRobinServerList<T>(tm,
-          Collections.unmodifiableList(new ArrayList<EquivalentAddressGroup>(list)));
+    public RoundRobinSubchannelList<T> build() {
+      return new RoundRobinSubchannelList<T>(tm,
+          Collections.unmodifiableList(new ArrayList<Subchannel<T>>(list)));
     }
   }
 
@@ -158,7 +133,7 @@ public class RoundRobinServerList<T> {
       T val = list.get(index);
       index++;
       if (index >= list.size()) {
-        index -= list.size();
+        index = 0;
       }
       return val;
     }

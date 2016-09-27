@@ -63,7 +63,6 @@ import io.grpc.ResolvedServerInfoGroup;
 import io.grpc.Status;
 import io.grpc.StringMarshaller;
 import io.grpc.TransportManager.InterimTransport;
-import io.grpc.TransportManager.OobTransportProvider;
 import io.grpc.TransportManager;
 import io.grpc.internal.TestUtils.MockClientTransportInfo;
 
@@ -114,6 +113,7 @@ public class ManagedChannelImplIdlenessTest {
   @Mock private SharedResourceHolder.Resource<ScheduledExecutorService> timerService;
   @Mock private ClientTransportFactory mockTransportFactory;
   @Mock private LoadBalancer<ClientTransport> mockLoadBalancer;
+  @Mock private NameResolver.Listener mockLoadBalancerNameResolverListener;
   @Mock private LoadBalancer.Factory mockLoadBalancerFactory;
   @Mock private NameResolver mockNameResolver;
   @Mock private NameResolver.Factory mockNameResolverFactory;
@@ -128,6 +128,8 @@ public class ManagedChannelImplIdlenessTest {
     when(mockLoadBalancerFactory
         .newLoadBalancer(anyString(), Matchers.<TransportManager<ClientTransport>>any()))
         .thenReturn(mockLoadBalancer);
+    when(mockLoadBalancer.getNameResolverListener())
+        .thenReturn(mockLoadBalancerNameResolverListener);
     when(mockNameResolver.getServiceAuthority()).thenReturn(authority);
     when(mockNameResolverFactory
         .newNameResolver(any(URI.class), any(Attributes.class)))
@@ -172,7 +174,7 @@ public class ManagedChannelImplIdlenessTest {
     doAnswer(new Answer<ClientTransport>() {
         @Override
         public ClientTransport answer(InvocationOnMock invocation) throws Throwable {
-          return channel.tm.getTransport(addressGroup);
+          return channel.tm.createSubchannel(addressGroup).getTransport();
         }
       }).when(mockLoadBalancer).pickTransport(any(Attributes.class));
 
@@ -191,7 +193,7 @@ public class ManagedChannelImplIdlenessTest {
 
     // Simulate new address resolved
     nameResolverListenerCaptor.getValue().onUpdate(servers, Attributes.EMPTY);
-    verify(mockLoadBalancer).handleResolvedAddresses(servers, Attributes.EMPTY);
+    verify(mockLoadBalancerNameResolverListener).onUpdate(servers, Attributes.EMPTY);
   }
 
   @Test
@@ -200,7 +202,7 @@ public class ManagedChannelImplIdlenessTest {
 
     // Trigger the creation of TransportSets
     for (EquivalentAddressGroup addressGroup : addressGroupList) {
-      channel.tm.getTransport(addressGroup);
+      channel.tm.createSubchannel(addressGroup);
       verify(mockTransportFactory).newClientTransport(
           addressGroup.getAddresses().get(0), authority, userAgent);
     }
@@ -249,7 +251,7 @@ public class ManagedChannelImplIdlenessTest {
     doAnswer(new Answer<ClientTransport>() {
         @Override
         public ClientTransport answer(InvocationOnMock invocation) throws Throwable {
-          return channel.tm.getTransport(addressGroup);
+          return channel.tm.createSubchannel(addressGroup).getTransport();
         }
       }).when(mockLoadBalancer).pickTransport(any(Attributes.class));
 
@@ -286,21 +288,21 @@ public class ManagedChannelImplIdlenessTest {
     EquivalentAddressGroup addressGroup = addressGroupList.get(0);
     forceExitIdleMode();
 
-    channel.tm.getTransport(addressGroup);
+    ClientTransport sct0 = channel.tm.createSubchannel(addressGroup).getTransport();
     MockClientTransportInfo t0 = newTransports.poll();
     t0.listener.transportReady();
-    assertSame(t0.transport, channelTmGetTransportUnwrapped(addressGroup));
+    assertSame(t0.transport, unwrapTransport(sct0));
 
     walkIntoIdleMode(Arrays.asList(t0));
     verify(t0.transport).shutdown();
 
     forceExitIdleMode();
-    channel.tm.getTransport(addressGroup);
+    ClientTransport sct1 = channel.tm.createSubchannel(addressGroup).getTransport();
     MockClientTransportInfo t1 = newTransports.poll();
     t1.listener.transportReady();
 
-    assertSame(t1.transport, channelTmGetTransportUnwrapped(addressGroup));
-    assertNotSame(t0.transport, channelTmGetTransportUnwrapped(addressGroup));
+    assertSame(t1.transport, unwrapTransport(sct1));
+    assertNotSame(t0.transport, t1.transport);
 
     channel.shutdown();
     verify(t1.transport).shutdown();
@@ -312,21 +314,6 @@ public class ManagedChannelImplIdlenessTest {
     assertFalse(channel.isTerminated());
     t0.listener.transportTerminated();
     assertTrue(channel.isTerminated());
-  }
-
-  @Test
-  public void loadBalancerShouldNotCreateConnectionsWhenIdle() throws Exception {
-    // Acts as a misbehaving LoadBalancer that tries to create connections when channel is in idle,
-    // which means the LoadBalancer is supposedly shutdown.
-    assertSame(ManagedChannelImpl.IDLE_MODE_TRANSPORT,
-        channel.tm.getTransport(addressGroupList.get(0)));
-    OobTransportProvider<ClientTransport> oobProvider =
-        channel.tm.createOobTransportProvider(addressGroupList.get(0), "authority");
-    assertSame(ManagedChannelImpl.IDLE_MODE_TRANSPORT, oobProvider.get());
-    oobProvider.close();
-    verify(mockTransportFactory, never()).newClientTransport(
-        any(SocketAddress.class), anyString(), anyString());
-    // We don't care for delayed (interim) transports, because they don't create connections.
   }
 
   private void walkIntoIdleMode(Collection<MockClientTransportInfo> currentTransports) {
@@ -350,8 +337,8 @@ public class ManagedChannelImplIdlenessTest {
     timer.runDueTasks();
   }
 
-  private ClientTransport channelTmGetTransportUnwrapped(EquivalentAddressGroup addressGroup) {
-    return ((ForwardingConnectionClientTransport) channel.tm.getTransport(addressGroup)).delegate();
+  private ClientTransport unwrapTransport(ClientTransport transport) {
+    return ((ForwardingConnectionClientTransport) transport).delegate();
   }
 
   private static class FakeBackoffPolicyProvider implements BackoffPolicy.Provider {

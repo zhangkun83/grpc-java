@@ -35,6 +35,7 @@ import java.net.URI;
 import java.util.List;
 
 import javax.annotation.Nullable;
+import javax.annotation.concurrent.NotThreadSafe;
 import javax.annotation.concurrent.ThreadSafe;
 
 /**
@@ -113,12 +114,14 @@ public abstract class NameResolver {
   /**
    * Receives address updates.
    *
-   * <p>All methods are expected to return quickly.
+   * <p>Invocations on these methods are serialized. All methods are expected to return quickly.
    */
-  @ThreadSafe
-  public interface Listener {
+  @NotThreadSafe
+  public abstract static class Listener {
     /**
-     * Handles updates on resolved addresses and attributes.
+     * Handles updates on resolved addresses and attributes.  {@code servers} contained in {@link
+     * ResolvedServerInfoGroup} should be considered equivalent but may be flattened into a single
+     * list if needed.
      *
      * <p>Implementations will not modify the given {@code servers}.
      *
@@ -126,13 +129,13 @@ public abstract class NameResolver {
      *                empty list will trigger {@link #onError}
      * @param attributes extra metadata from naming system
      */
-    void onUpdate(List<ResolvedServerInfoGroup> servers, Attributes attributes);
+    public void onUpdate(List<ResolvedServerInfoGroup> servers, Attributes attributes) { }
 
     /**
      * Handles an error from the resolver.
      *
      * @param error a non-OK status
      */
-    void onError(Status error);
+    public void onError(Status error) { }
   }
 }
