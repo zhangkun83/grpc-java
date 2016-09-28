@@ -99,8 +99,6 @@ public final class RoundRobinLoadBalancerFactory extends LoadBalancer.Factory {
     private final TransportManager<T> tm;
 
     private final NameResolver.Listener nameResolverListener = new NameResolver.Listener() {
-      private final HashMap<EquivalentAddressGroup, SubchannelState<T>> subchannels =
-          new HashMap<EquivalentAddressGroup, SubchannelState<T>>();
 
       @Override
       public void onUpdate(List<ResolvedServerInfoGroup> updatedServers,
@@ -220,15 +218,6 @@ public final class RoundRobinLoadBalancerFactory extends LoadBalancer.Factory {
         closed = true;
         roundRobinList = null;
       }
-    }
-  }
-
-  private static class SubchannelState<T> {
-    final Subchannel<T> subchannel;
-    boolean healthy = true;
-
-    SubchannelState(Subchannel<T> subchannel) {
-      this.subchannel = subchannel;
     }
   }
 

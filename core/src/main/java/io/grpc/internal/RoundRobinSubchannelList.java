@@ -50,27 +50,58 @@ import javax.annotation.concurrent.NotThreadSafe;
 import javax.annotation.concurrent.ThreadSafe;
 
 /**
- * Manages a list of subchannels to round-robin on.
+ * Manages a list of subchannels to round-robin on.  It can be created in two modes:
+ * <ol>
+ *   <li>Normal mode: it's initialized with a list of Subchannels. {@link #getNextTransport}
+ *       round-robins on the list. In this mode, {@link #getError} returns {@code null}</li>
+ *   <li>Error mode: it's initialized with an error Status. {@link #getError} returns the error,
+ *       and {@link #getNextTransport} always returns a failing transport that would fail requests
+ *       with that error.</li>
+ * </ol>
  */
 @ThreadSafe
-public class RoundRobinSubchannelList<T> {
+public final class RoundRobinSubchannelList<T> {
   private final TransportManager<T> tm;
   private final List<Subchannel<T>> list;
   private final Iterator<Subchannel<T>> cyclingIter;
   private final T requestDroppingTransport;
 
-  private RoundRobinSubchannelList(TransportManager<T> tm, List<Subchannel<T>> list) {
-    this.tm = tm;
-    this.list = list;
+  private final T erroringTransport;
+  private final Status errorStatus;
+
+  /**
+   * Creates an instance in normal mode.
+   */
+  RoundRobinSubchannelList(TransportManager<T> tm, List<Subchannel<T>> list) {
+    this.tm = checkNotNull(tm, "tm");
+    this.list = Collections.unmodifiableList(new ArrayList(list));
     this.cyclingIter = new CycleIterator<Subchannel<T>>(list);
     this.requestDroppingTransport =
       tm.createFailingTransport(Status.UNAVAILABLE.withDescription("Throttled by LB"));
+    this.erroringTransport = null;
+    this.errorStatus = null;
   }
 
   /**
-   * Returns the transport of the next subchannel.
+   * Creates an instance in error mode.
+   */
+  RoundRobinSubchannelList(TransportManager<T> tm, Status error) {
+    this.tm = checkNotNull(tm, "tm");
+    this.list = null;
+    this.cyclingIter = null;
+    this.requestDroppingTransport = null;
+
+    this.erroringTransport = tm.createFailingTransport(error);
+    this.errorStatus = error;
+  }
+
+  /**
+   * Returns the transport of the next subchannel, or a failing transport if in error mode.
    */
   public T getNextTransport() {
+    if (erroringTransport != null) {
+      return erroringTransport;
+    }
     Subchannel<T> next;
     synchronized (cyclingIter) {
       next = cyclingIter.next();
@@ -81,35 +112,22 @@ public class RoundRobinSubchannelList<T> {
     return next.getTransport();
   }
 
-  public int size() {
-    return list.size();
+  /**
+   * Returns the error if in error mode, or {@code null} if in normal mode.
+   */
+  @Nullable
+  public Status getError() {
+    return errorStatus;
   }
 
-  @NotThreadSafe
-  public static class Builder<T> {
-    private final List<Subchannel<T>> list = new ArrayList<Subchannel<T>>();
-    private final TransportManager<T> tm;
-
-    public Builder(TransportManager<T> tm) {
-      this.tm = tm;
+  /**
+   * Returns the size of the list, or 0 if in error mode.
+   */
+  public int size() {
+    if (list == null) {
+      return 0;
     }
-
-    /**
-     * Adds a subchannel to the list, or {@code null} for inserting a dropping token.  A dropping
-     * token is a pseudo subchannel that will always fail the request, used as a throttling
-     * mechanism.
-     *
-     * @param addresses the addresses to add
-     */
-    public Builder<T> add(@Nullable Subchannel<T> addresses) {
-      list.add(addresses);
-      return this;
-    }
-
-    public RoundRobinSubchannelList<T> build() {
-      return new RoundRobinSubchannelList<T>(tm,
-          Collections.unmodifiableList(new ArrayList<Subchannel<T>>(list)));
-    }
+    return list.size();
   }
 
   private static final class CycleIterator<T> implements Iterator<T> {
