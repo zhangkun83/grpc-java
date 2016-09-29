@@ -55,6 +55,7 @@ import javax.annotation.concurrent.ThreadSafe;
 @ThreadSafe
 public final class RoundRobinManager<T> {
   private final TransportManager<T> tm;
+  private final StateListener listener;
 
   // Mutations to them must be done in runSequentially()
   private final HashMap<EquivalentAddressGroup, SubchannelState<T>> subchannels =
@@ -64,8 +65,9 @@ public final class RoundRobinManager<T> {
 
   private final BlockingQueue<Runnable> workQueue = new LinkedBlockingQueue<Runnable>();
 
-  public RoundRobinManager(TransportManager<T> tm) {
+  public RoundRobinManager(TransportManager<T> tm, StateListener listener) {
     this.tm = tm;
+    this.listener = listener;
     rebuildRoundRobinList();
   }
 
@@ -108,62 +110,38 @@ public final class RoundRobinManager<T> {
   }
 
   private void rebuildRoundRobinList() {
-    List<Subchannel<T>> newList = new ArrayList<Subchannel<T>>();
+    RoundRobinSubchannelList<T> newRoundRobinList;
     if (addressList.isEmpty()) {
-      return new RoundRobinSubchannelList<T>(
+      newRoundRobinList = new RoundRobinSubchannelList<T>(
           tm, Status.UNAVAILABLE.withDescription("No address available"));
-    }
-    for (EquivalentAddressGroup address : addressList) {
-      SubchannelState<T> subchannelState = subchannels.get(address);
-      checkState(subchannelState != null, "Cannot find subchannel for %s", address);
-      if (subchannelState.healthy) {
-        newList.add(subchannelState.subchannel);
+    } else {
+      List<Subchannel<T>> newList = new ArrayList<Subchannel<T>>();
+      for (EquivalentAddressGroup address : addressList) {
+        SubchannelState<T> subchannelState = subchannels.get(address);
+        checkState(subchannelState != null, "Cannot find subchannel for %s", address);
+        if (subchannelState.healthy) {
+          newList.add(subchannelState.subchannel);
+        }
+      }
+      if (newList.isEmpty()) {
+        newRoundRobinList = new RoundRobinSubchannelList<T>(tm, Status.UNAVAILABLE.withDescription(
+                "None of the " + addressList.size() + " subchannels are healthy"));
+      } else {
+        newRoundRobinList = new RoundRobinSubchannelList<T>(tm, newList);
       }
     }
-    if (newList.isEmpty()) {
-      return new RoundRobinSubchannelList<T>(tm, Status.UNAVAILABLE.withDescription(
-              "None of the " + addressList.size() + " subchannels are healthy"));
-    }
-    this.roundRobinList = new RoundRobinSubchannelList<T>(tm, newList);
+    this.roundRobinList = newRoundRobinList;
   }
 
   /**
-   * Picks a transport for the next RPC.
+   * Returns the latest round-robin list.
    */
-  public PickResult<T> getNextTransport() {
-    RoundRobinSubchannelList<T> savedList = roundRobinList;
-    if (savedList.getError() != null) {
-      return new PickResult<T>(savedList.getError());
-    }
-    return new PickResult<T>(savedList.getNextTransport());
+  public RoundRobinSubchannelList<T> getRoundRobinList() {
+    return roundRobinList;
   }
 
-  public static final class PickResult<T> {
-    private final Status status;
-    @Nullable private final T transport;
-
-    private PickResult(Status status) {
-      checkArgument(!status.isOk(), "status should not be OK");
-      this.status = status;
-      this.transport = null;
-    }
-
-    private PickResult(T transport) {
-      this.status = Status.OK;
-      this.transport = checkNotNull(transport, "transport");
-    }
-
-    public Status getStatus() {
-      return status;
-    }
-
-    /**
-     * {@code null} if {@link #getStatus} returns a non-OK status.
-     */
-    @Nullable
-    public T getTransport() {
-      return transport;
-    }
+  public static abstract class StateListener {
+    public void onState(ConnectivityState state) {}
   }
 
   private static final long MAX_CONNECTING_TIME_SECONDS = 20;

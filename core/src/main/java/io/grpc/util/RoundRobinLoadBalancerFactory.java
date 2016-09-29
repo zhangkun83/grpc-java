@@ -92,67 +92,41 @@ public final class RoundRobinLoadBalancerFactory extends LoadBalancer.Factory {
     @GuardedBy("lock")
     private InterimTransport<T> interimTransport;
     @GuardedBy("lock")
-    private Status nameResolutionError;
+    @Nullable
+    private Status lastError;
     @GuardedBy("lock")
     private boolean closed;
 
     private final TransportManager<T> tm;
+    private final RoundRobinManager roundRobinManager;
 
     private final NameResolver.Listener nameResolverListener = new NameResolver.Listener() {
 
       @Override
-      public void onUpdate(List<ResolvedServerInfoGroup> updatedServers,
-          Attributes attributes) {
-        List<EquivalentAddressGroup> updatedAddressGroupList =
+      public void onUpdate(List<ResolvedServerInfoGroup> updatedServers, Attributes attributes) {
+        List<EquivalentAddressGroup> latestAddressGroupList =
             new ArrayList<EquivalentAddressGroup>();
-        HashSet<EquivalentAddressGroup> updatedAddressGroupSet =
-            new HashSet<EquivalentAddressGroup>();
-        final RoundRobinSubchannelList<T> savedRoundRobinList;
-        InterimTransport<T> savedInterimTransport;
-
-        // Find out the added and removed subchannels, and create the added subchannels
         for (ResolvedServerInfoGroup serverInfoGroup : updatedServers) {
-          EquivalentAddressGroup addressGroup = serverInfoGroup.toEquivalentAddressGroup();
-          if (!subchannels.containsKey(addressGroup)) {
-            subchannels.put(addressGroup, new SubchannelState<T>(tm.createSubchannel(addressGroup)));
-          }
-          updatedAddressGroupList.add(addressGroup);
-          updatedAddressGroupSet.add(addressGroup);
+          latestAddressGroupList.add(serverInfoGroup.toEquivalentAddressGroup());
         }
+        roundRobinManager.updateAddressList(latestAddressGroupList);
+        RoundRobinSubchannelList<T> roundRobinList = roundRobinManager.getRoundRobinList();
 
-        // Shutdown the removed subchannels
-        for (Iterator<Entry<EquivalentAddressGroup, SubchannelState<T>>> it =
-                 subchannels.entrySet().iterator(); it.hasNext();) {
-          Entry<EquivalentAddressGroup, SubchannelState<T>> entry = it.next();
-          if (!updatedAddressGroupSet.contains(entry.getKey())) {
-            entry.getValue().subchannel.shutdown();
-            it.remove();
-          }
-        }
-
-        // Build the new round-robin list, if not shutdown yet
         synchronized (lock) {
           if (closed) {
             return;
           }
-          RoundRobinSubchannelList.Builder<T> listBuilder =
-              new RoundRobinSubchannelList.Builder<T>(tm);
-          for (EquivalentAddressGroup addressGroup : updatedAddressGroupList) {
-            SubchannelState<T> subchannel = subchannels.get(addressGroup);
-            checkState(subchannel != null, "Subchannel for %s is missing", addressGroup);
-            listBuilder.add(subchannel.subchannel);
+          lastError = roundRobinList.getError();
+          if (lastError == null) {
+            savedInterimTransport = interimTransport;
+            interimTransport = null;
           }
-          roundRobinList = listBuilder.build();
-          savedRoundRobinList = roundRobinList;
-          nameResolutionError = null;
-          savedInterimTransport = interimTransport;
-          interimTransport = null;
         }
 
         if (savedInterimTransport != null) {
           savedInterimTransport.closeWithRealTransports(new Supplier<T>() {
               @Override public T get() {
-                return savedRoundRobinList.getNextTransport();
+                return roundRobinList.getNextTransport();
               }
             });
         }
@@ -168,7 +142,7 @@ public final class RoundRobinLoadBalancerFactory extends LoadBalancer.Factory {
           error = error.augmentDescription("Name resolution failed");
           savedInterimTransport = interimTransport;
           interimTransport = null;
-          nameResolutionError = error;
+          lastError = error;
         }
         if (savedInterimTransport != null) {
           savedInterimTransport.closeWithError(error);
@@ -178,8 +152,15 @@ public final class RoundRobinLoadBalancerFactory extends LoadBalancer.Factory {
 
     private RoundRobinLoadBalancer(TransportManager<T> tm) {
       this.tm = tm;
+      this.roundRobinManager = new RoundRobinManager(tm);
     }
 
+    // TODO(zhangkun83): honor wait-for-ready:
+    // 1. Always provide the interim transport for wait-for-ready requests
+    // 2. Provide failing transport for fail-fast requests if the current state is
+    //    TRANSIENT_FAILURE. This would require implementation of channel-state semantics
+    //    in the LB.
+    // 3. Only fail fail-fast requests in interim transport when seeing an error (#2209)
     @Override
     public T pickTransport(Attributes affinity) {
       RoundRobinSubchannelList<T> savedRoundRobinList = roundRobinList;
