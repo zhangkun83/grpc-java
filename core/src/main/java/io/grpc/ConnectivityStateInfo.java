@@ -29,70 +29,38 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-package io.grpc.internal;
-
-import java.util.HashSet;
-
-import javax.annotation.concurrent.GuardedBy;
+package io.grpc;
 
 /**
- * Aggregates the in-use state of a set of objects.
+ * A tuple of a {@link ConnectivityState} and an error {@link Status} that is present only with
+ * {@link ConnectivityState.TRANSIENT_ERROR}.
  */
-@NotThreadSafe
-abstract class InUseStateAggregator<T> {
-
-  private final Executor executor;
-  private final HashSet<T> inUseObjects = new HashSet<T>();
-  private final Runnable runHandleInUse = new Runnable() {
-      @Override
-      public void run() {
-        handleInUse();
-      }
-    };
-
-  private final Runnable runHandleNotInUse = new Runnable() {
-      @Override
-      public void run() {
-        handleNotInUse();
-      }
-    };
-
-  InUseStateAggregator(Executor executor) {
-    this.executor = executor;
-  }
+@ExperimentalApi("https://github.com/grpc/grpc-java/issues/1771")
+public class ConnectivityStateInfo {
+  private final ConnectivityState state;
+  @Nullable private final Status error;
 
   /**
-   * Update the in-use state of an object. Initially no object is in use.
-   */
-  final void updateObjectInUse(T object, boolean inUse) {
-    int origSize = inUseObjects.size();
-    if (inUse) {
-      inUseObjects.add(object);
-      if (origSize == 0) {
-        executor.execute(runHandleInUse);
-      }
-    } else {
-      boolean removed = inUseObjects.remove(object);
-      if (removed && origSize == 1) {
-        executor.execute(runHandleNotInUse);
-      }
-    }
-  }
-
-  final boolean isInUse() {
-    return !inUseObjects.isEmpty();
-  }
-
-  /**
-   * Called when the aggregated in-use state has changed to true, which means at least one object is
-   * in use.
-   */
-  abstract void handleInUse();
-
-  /**
-   * Called when the aggregated in-use state has changed to false, which means no object is in use.
+   * Returns an instance for a state that is not {@code TRANSIENT_ERROR}.
    *
-   * <p>This method is called under the lock returned by {@link #getLock}.
+   * @throw IllegalArgumentException if {@code state} is {@code TRANSIENT_ERROR}.
    */
-  abstract void handleNotInUse();
+  public static ConnectivityStateInfo forNonError(ConnectivityState state) {
+    Preconditions.checkArgument(state != ConnectivityState.TRANSIENT_ERROR,
+        "state is TRANSIENT_ERROR. Use forError() instead");
+    return new ConnectivityStateInfo(state, null);
+  }
+
+  /**
+   * Returns an instance for {@code TRANSIENT_ERROR}, associated with an error status.
+   */
+  public static ConnectivityStateInfo forError(State error) {
+    Preconditions.checkNotNull(error, "error is null");
+    return new ConnectivityStateInfo(ConnectivityStateInfo.TRANSIENT_ERROR, error);
+  }
+
+  private ConnectivityStateInfo(ConnectivityState state, State, error) {
+    this.state = Preconditions.checkNotNull(state, "state is null");
+    this.error = error;
+  }
 }

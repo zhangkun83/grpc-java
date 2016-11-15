@@ -187,25 +187,20 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
 
   @VisibleForTesting
   final InUseStateAggregator<Object> inUseStateAggregator =
-      new InUseStateAggregator<Object>() {
+      new InUseStateAggregator<Object>(channelExecutor) {
         @Override
-        Object getLock() {
-          return lock;
-        }
-
-        @Override
-        @GuardedBy("lock")
         void handleInUse() {
           exitIdleMode();
         }
 
-        @GuardedBy("lock")
         @Override
         void handleNotInUse() {
-          if (shutdown) {
-            return;
+          synchronized (lock) {
+            if (shutdown) {
+              return;
+            }
+            rescheduleIdleTimer();
           }
-          rescheduleIdleTimer();
         }
       };
 
@@ -692,13 +687,11 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
                 }
 
                 @Override
-                public void onAllAddressesFailed() {
-                  nameResolver.refresh();
-                }
-
-                @Override
-                public void onConnectionClosedByServer(Status status) {
-                  nameResolver.refresh();
+                public void onStateChange(TransportSet ts, ConnectivityStateInfo newState) {
+                  if (newState.getState() == ConnectivityState.IDLE
+                      || newState.getState() == ConnectivityState.TRANSIENT_FAILURE) {
+                    nameResolver.refresh();
+                  }
                 }
 
                 @Override
@@ -794,13 +787,23 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
               delayedTransports.remove(delayedTransport);
               maybeTerminateChannel();
             }
-            inUseStateAggregator.updateObjectInUse(delayedTransport, false);
+            channelExecutor.execute(new Runnable() {
+                @Override
+                public void run() {
+                  inUseStateAggregator.updateObjectInUse(delayedTransport, false);
+                }
+              });
           }
 
           @Override public void transportReady() {}
 
           @Override public void transportInUse(boolean inUse) {
-            inUseStateAggregator.updateObjectInUse(delayedTransport, inUse);
+            channelExecutor.execute(new Runnable() {
+                @Override
+                pulbic void run() {
+                  inUseStateAggregator.updateObjectInUse(delayedTransport, inUse);
+                }
+              });
           }
         });
       boolean savedShutdown;

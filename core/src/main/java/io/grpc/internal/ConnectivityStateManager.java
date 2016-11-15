@@ -43,11 +43,12 @@ import javax.annotation.concurrent.NotThreadSafe;
  */
 @NotThreadSafe
 class ConnectivityStateManager {
+  private final ArrayList<StateListenerEntry> listeners = new ArrayList<StateListenerEntry>();
   private ArrayList<StateCallbackEntry> callbacks;
 
-  private ConnectivityState state;
+  private ConnectivityStateInfo state;
 
-  ConnectivityStateManager(ConnectivityState initialState) {
+  ConnectivityStateManager(ConnectivityStateInfo initialState) {
     state = initialState;
   }
 
@@ -63,23 +64,34 @@ class ConnectivityStateManager {
     }
   }
 
+  /**
+   * Adds a persistent listener that is called for every single state change in the given executor.
+   *
+   * <p>This must not be called inside a {@link StateListener}.
+   */
+  void addListener(StateListener listener, Executor executor) {
+    listeners.add(new StateListenerEntry(listener, executor));
+  }
+
   // TODO(zhangkun83): return a runnable in order to escape transport set lock, in case direct
   // executor is used?
-  void gotoState(ConnectivityState newState) {
+  void gotoState(ConnectivityStateInfo newState) {
     if (state != newState) {
       if (state == ConnectivityState.SHUTDOWN) {
         throw new IllegalStateException("Cannot transition out of SHUTDOWN to " + newState);
       }
       state = newState;
-      if (callbacks == null) {
-        return;
+      if (callbacks != null) {
+        // Swap out callback list before calling them, because a callback may register new
+        // callbacks, if run in direct executor, can cause ConcurrentModificationException.
+        ArrayList<StateCallbackEntry> savedCallbacks = callbacks;
+        callbacks = null;
+        for (StateCallbackEntry callback : savedCallbacks) {
+          callback.runInExecutor();
+        }
       }
-      // Swap out callback list before calling them, because a callback may register new callbacks,
-      // if run in direct executor, can cause ConcurrentModificationException.
-      ArrayList<StateCallbackEntry> savedCallbacks = callbacks;
-      callbacks = null;
-      for (StateCallbackEntry callback : savedCallbacks) {
-        callback.runInExecutor();
+      for (StateListenerEntry listener : listeners) {
+        listener.notifyInExecutor(newState);
       }
     }
   }
@@ -99,6 +111,29 @@ class ConnectivityStateManager {
 
     void runInExecutor() {
       executor.execute(callback);
+    }
+  }
+
+  interface StateListener {
+    void onStateChange(ConnectivityStateInfo newState);
+  }
+
+  private static class StateListenerEntry {
+    final StateListener listener;
+    final Executor executor;
+
+    StateListenerEntry(StateListener listener, Executor executor) {
+      this.listener = listener;
+      this.executor = executor;
+    }
+
+    void notifyInExecutor(final ConnectivityStateInfo newState) {
+      executor.execute(new Runnable() {
+          @Override
+          public void run() {
+            listener.onStateChange(newState);
+          }
+        });
     }
   }
 }
