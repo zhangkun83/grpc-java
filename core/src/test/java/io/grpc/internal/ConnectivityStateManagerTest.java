@@ -36,6 +36,7 @@ import static org.junit.Assert.assertEquals;
 import com.google.common.util.concurrent.MoreExecutors;
 
 import io.grpc.ConnectivityState;
+import io.grpc.Status;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -56,15 +57,15 @@ public class ConnectivityStateManagerTest {
 
   @Test
   public void noCallback() {
-    state.gotoState(ConnectivityState.CONNECTING);
+    state.gotoNonErrorState(ConnectivityState.CONNECTING);
     assertEquals(ConnectivityState.CONNECTING, state.getState());
-    state.gotoState(ConnectivityState.TRANSIENT_FAILURE);
+    state.gotoTransientFailureState(Status.UNAVAILABLE);
     assertEquals(ConnectivityState.TRANSIENT_FAILURE, state.getState());
   }
 
   @Test
   public void registerCallbackBeforeStateChanged() {
-    state.gotoState(ConnectivityState.CONNECTING);
+    state.gotoNonErrorState(ConnectivityState.CONNECTING);
     assertEquals(ConnectivityState.CONNECTING, state.getState());
 
     state.notifyWhenStateChanged(new Runnable() {
@@ -75,7 +76,7 @@ public class ConnectivityStateManagerTest {
       }, executor.getScheduledExecutorService(), ConnectivityState.CONNECTING);
 
     assertEquals(0, executor.numPendingTasks());
-    state.gotoState(ConnectivityState.TRANSIENT_FAILURE);
+    state.gotoTransientFailureState(Status.UNAVAILABLE);
     // Make sure the callback is run in the executor
     assertEquals(0, sink.size());
     assertEquals(1, executor.runDueTasks());
@@ -86,7 +87,7 @@ public class ConnectivityStateManagerTest {
   
   @Test
   public void registerCallbackAfterStateChanged() {
-    state.gotoState(ConnectivityState.CONNECTING);
+    state.gotoNonErrorState(ConnectivityState.CONNECTING);
     assertEquals(ConnectivityState.CONNECTING, state.getState());
 
     state.notifyWhenStateChanged(new Runnable() {
@@ -113,7 +114,7 @@ public class ConnectivityStateManagerTest {
         }
       }, executor.getScheduledExecutorService(), ConnectivityState.IDLE);
 
-    state.gotoState(ConnectivityState.IDLE);
+    state.gotoNonErrorState(ConnectivityState.IDLE);
     assertEquals(0, executor.numPendingTasks());
     assertEquals(0, sink.size());
   }
@@ -130,14 +131,14 @@ public class ConnectivityStateManagerTest {
     state.notifyWhenStateChanged(callback, executor.getScheduledExecutorService(),
         ConnectivityState.IDLE);
     // First transition triggers the callback
-    state.gotoState(ConnectivityState.CONNECTING);
+    state.gotoNonErrorState(ConnectivityState.CONNECTING);
     assertEquals(1, executor.runDueTasks());
     assertEquals(1, sink.size());
     assertEquals(ConnectivityState.CONNECTING, sink.poll());
     assertEquals(0, executor.numPendingTasks());
 
     // Second transition doesn't trigger the callback
-    state.gotoState(ConnectivityState.TRANSIENT_FAILURE);
+    state.gotoTransientFailureState(Status.UNAVAILABLE);
     assertEquals(0, sink.size());
     assertEquals(0, executor.numPendingTasks());
 
@@ -145,8 +146,8 @@ public class ConnectivityStateManagerTest {
     state.notifyWhenStateChanged(callback, executor.getScheduledExecutorService(),
         ConnectivityState.TRANSIENT_FAILURE);
 
-    state.gotoState(ConnectivityState.READY);
-    state.gotoState(ConnectivityState.IDLE);
+    state.gotoNonErrorState(ConnectivityState.READY);
+    state.gotoNonErrorState(ConnectivityState.IDLE);
     // Callback loses the race with the second stage change
     assertEquals(1, executor.runDueTasks());
     assertEquals(1, sink.size());
@@ -189,7 +190,7 @@ public class ConnectivityStateManagerTest {
     assertEquals(ConnectivityState.IDLE, sink.poll());
 
     // Now change the state.
-    state.gotoState(ConnectivityState.CONNECTING);
+    state.gotoNonErrorState(ConnectivityState.CONNECTING);
     assertEquals(2, executor.runDueTasks());
     assertEquals(2, callbackRuns.size());
     assertEquals("callback1", callbackRuns.poll());
@@ -216,13 +217,13 @@ public class ConnectivityStateManagerTest {
     state.notifyWhenStateChanged(newRecursiveCallback(executor.getScheduledExecutorService()),
         executor.getScheduledExecutorService(), state.getState());
 
-    state.gotoState(ConnectivityState.CONNECTING);
+    state.gotoNonErrorState(ConnectivityState.CONNECTING);
     assertEquals(1, executor.runDueTasks());
     assertEquals(0, executor.numPendingTasks());
     assertEquals(1, sink.size());
     assertEquals(ConnectivityState.CONNECTING, sink.poll());
 
-    state.gotoState(ConnectivityState.READY);
+    state.gotoNonErrorState(ConnectivityState.READY);
     assertEquals(1, executor.runDueTasks());
     assertEquals(0, executor.numPendingTasks());
     assertEquals(1, sink.size());
@@ -234,11 +235,11 @@ public class ConnectivityStateManagerTest {
     state.notifyWhenStateChanged(newRecursiveCallback(MoreExecutors.directExecutor()),
         MoreExecutors.directExecutor(), state.getState());
 
-    state.gotoState(ConnectivityState.CONNECTING);
+    state.gotoNonErrorState(ConnectivityState.CONNECTING);
     assertEquals(1, sink.size());
     assertEquals(ConnectivityState.CONNECTING, sink.poll());
 
-    state.gotoState(ConnectivityState.READY);
+    state.gotoNonErrorState(ConnectivityState.READY);
     assertEquals(1, sink.size());
     assertEquals(ConnectivityState.READY, sink.poll());
   }

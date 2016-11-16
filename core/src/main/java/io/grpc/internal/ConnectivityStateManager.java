@@ -33,6 +33,7 @@ package io.grpc.internal;
 
 import io.grpc.ConnectivityState;
 import io.grpc.ConnectivityStateInfo;
+import io.grpc.Status;
 
 import java.util.ArrayList;
 import java.util.concurrent.Executor;
@@ -49,12 +50,11 @@ class ConnectivityStateManager {
 
   private ConnectivityStateInfo state;
 
-  ConnectivityStateManager(ConnectivityStateInfo initialState) {
-    state = initialState;
+  ConnectivityStateManager(ConnectivityState initialNonErrorState) {
+    state = ConnectivityStateInfo.forNonError(initialNonErrorState);
   }
 
-  void notifyWhenStateChanged(Runnable callback, SerializingExecutor executor,
-      ConnectivityState source) {
+  void notifyWhenStateChanged(Runnable callback, Executor executor, ConnectivityState source) {
     StateCallbackEntry callbackEntry = new StateCallbackEntry(callback, executor);
     if (state.getState() != source) {
       callbackEntry.runInExecutor();
@@ -77,7 +77,7 @@ class ConnectivityStateManager {
 
   // TODO(zhangkun83): return a runnable in order to escape transport set lock, in case direct
   // executor is used?
-  void gotoState(ConnectivityStateInfo newState) {
+  private void gotoState(ConnectivityStateInfo newState) {
     if (state != newState) {
       if (state.getState() == ConnectivityState.SHUTDOWN) {
         throw new IllegalStateException("Cannot transition out of SHUTDOWN to " + newState);
@@ -96,6 +96,14 @@ class ConnectivityStateManager {
         listener.notifyInExecutor(newState);
       }
     }
+  }
+
+  public void gotoNonErrorState(ConnectivityState newState) {
+    gotoState(ConnectivityStateInfo.forNonError(newState));
+  }
+
+  public void gotoTransientFailureState(Status error) {
+    gotoState(ConnectivityStateInfo.forTransientFailure(error));
   }
 
   ConnectivityState getState() {

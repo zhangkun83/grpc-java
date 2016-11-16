@@ -39,7 +39,7 @@ import javax.annotation.Nullable;
 
 /**
  * A tuple of a {@link ConnectivityState} and an error {@link Status} that is present only with
- * {@link ConnectivityState.TRANSIENT_ERROR}.
+ * {@link io.grpc.ConnectivityState#TRANSIENT_FAILURE}.
  */
 @ExperimentalApi("https://github.com/grpc/grpc-java/issues/1771")
 public final class ConnectivityStateInfo {
@@ -47,9 +47,9 @@ public final class ConnectivityStateInfo {
   @Nullable private final Status error;
 
   /**
-   * Returns an instance for a state that is not {@code TRANSIENT_ERROR}.
+   * Returns an instance for a state that is not {@code TRANSIENT_FAILURE}.
    *
-   * @throw IllegalArgumentException if {@code state} is {@code TRANSIENT_ERROR}.
+   * @throws IllegalArgumentException if {@code state} is {@code TRANSIENT_FAILURE}.
    */
   public static ConnectivityStateInfo forNonError(ConnectivityState state) {
     Preconditions.checkArgument(state != ConnectivityState.TRANSIENT_FAILURE,
@@ -58,9 +58,9 @@ public final class ConnectivityStateInfo {
   }
 
   /**
-   * Returns an instance for {@code TRANSIENT_ERROR}, associated with an error status.
+   * Returns an instance for {@code TRANSIENT_FAILURE}, associated with an error status.
    */
-  public static ConnectivityStateInfo forError(Status error) {
+  public static ConnectivityStateInfo forTransientFailure(Status error) {
     Preconditions.checkNotNull(error, "error is null");
     return new ConnectivityStateInfo(ConnectivityState.TRANSIENT_FAILURE, error);
   }
@@ -72,6 +72,31 @@ public final class ConnectivityStateInfo {
   @Nullable
   public Status getError() {
     return error;
+  }
+
+  @Override
+  public boolean equals(Object other) {
+    if (!(other instanceof ConnectivityStateInfo)) {
+      return false;
+    }
+    ConnectivityStateInfo o = (ConnectivityStateInfo) other;
+    if (!state.equals(o.state)) {
+      return false;
+    }
+    if (error == null) {
+      return o.state == null;
+    } else {
+      return error.equals(o.state);
+    }
+  }
+
+  @Override
+  public int hashCode() {
+    int value = state.hashCode();
+    if (error != null) {
+      value = value ^ error.hashCode();
+    }
+    return value;
   }
 
   private ConnectivityStateInfo(ConnectivityState state, Status error) {

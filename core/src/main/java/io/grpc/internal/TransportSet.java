@@ -31,6 +31,7 @@
 
 package io.grpc.internal;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Stopwatch;
 import com.google.common.base.Supplier;
@@ -143,7 +144,7 @@ final class TransportSet implements WithLogId {
 
   @GuardedBy("lock")
   private final ConnectivityStateManager stateManager =
-      new ConnectivityStateManager(ConnectivityStateInfo.forNonError(ConnectivityState.IDLE));
+      new ConnectivityStateManager(ConnectivityState.IDLE);
 
   TransportSet(EquivalentAddressGroup addressGroup, String authority, String userAgent,
       LoadBalancer<ClientTransport> loadBalancer, BackoffPolicy.Provider backoffPolicyProvider,
@@ -189,7 +190,7 @@ final class TransportSet implements WithLogId {
       if (shutdown) {
         return null;
       }
-      stateManager.gotoState(ConnectivityStateInfo.forNonError(ConnectivityState.CONNECTING));
+      stateManager.gotoNonErrorState(ConnectivityState.CONNECTING);
       runnable = startNewTransport();
     }
     if (runnable != null) {
@@ -237,8 +238,7 @@ final class TransportSet implements WithLogId {
           synchronized (lock) {
             reconnectTask = null;
             if (!shutdown) {
-              stateManager.gotoState(
-                  ConnectivityStateInfo.forNonError(ConnectivityState.CONNECTING));
+              stateManager.gotoNonErrorState(ConnectivityState.CONNECTING);
             }
             runnable = startNewTransport();
           }
@@ -255,7 +255,7 @@ final class TransportSet implements WithLogId {
       if (shutdown) {
         return;
       }
-      stateManager.gotoState(ConnectivityStateInfo.forError(status));
+      stateManager.gotoTransientFailureState(status);
       if (reconnectPolicy == null) {
         reconnectPolicy = backoffPolicyProvider.get();
       }
@@ -281,7 +281,7 @@ final class TransportSet implements WithLogId {
       if (shutdown) {
         return;
       }
-      stateManager.gotoState(ConnectivityStateInfo.forNonError(ConnectivityState.SHUTDOWN));
+      stateManager.gotoNonErrorState(ConnectivityState.SHUTDOWN);
       shutdown = true;
       savedActiveTransport = activeTransport;
       savedPendingTransport = pendingTransport;
@@ -360,6 +360,13 @@ final class TransportSet implements WithLogId {
     return authority;
   }
 
+  @VisibleForTesting
+  ConnectivityState getState() {
+    synchronized (lock) {
+      return stateManager.getState();
+    }
+  }
+
   /** Shared base for both delayed and real transports. */
   private class BaseTransportListener implements ManagedClientTransport.Listener {
     protected final ManagedClientTransport transport;
@@ -425,7 +432,7 @@ final class TransportSet implements WithLogId {
           Preconditions.checkState(activeTransport == null,
               "Unexpected non-null activeTransport");
         } else if (pendingTransport == transport) {
-          stateManager.gotoState(ConnectivityStateInfo.forNonError(ConnectivityState.READY));
+          stateManager.gotoNonErrorState(ConnectivityState.READY);
           activeTransport = transport;
           pendingTransport = null;
         }
@@ -452,7 +459,7 @@ final class TransportSet implements WithLogId {
           // This is true only if the transport was ready.
           // shutdown() should have set activeTransport to null
           Preconditions.checkState(!shutdown, "unexpected shutdown state");
-          stateManager.gotoState(ConnectivityStateInfo.forNonError(ConnectivityState.IDLE));
+          stateManager.gotoNonErrorState(ConnectivityState.IDLE);
           activeTransport = null;
           closedByServer = true;
         } else if (pendingTransport == transport) {
