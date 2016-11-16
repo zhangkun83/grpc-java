@@ -32,6 +32,7 @@
 package io.grpc.internal;
 
 import io.grpc.ConnectivityState;
+import io.grpc.ConnectivityStateInfo;
 
 import java.util.ArrayList;
 import java.util.concurrent.Executor;
@@ -52,9 +53,10 @@ class ConnectivityStateManager {
     state = initialState;
   }
 
-  void notifyWhenStateChanged(Runnable callback, Executor executor, ConnectivityState source) {
+  void notifyWhenStateChanged(Runnable callback, SerializingExecutor executor,
+      ConnectivityState source) {
     StateCallbackEntry callbackEntry = new StateCallbackEntry(callback, executor);
-    if (state != source) {
+    if (state.getState() != source) {
       callbackEntry.runInExecutor();
     } else {
       if (callbacks == null) {
@@ -69,7 +71,7 @@ class ConnectivityStateManager {
    *
    * <p>This must not be called inside a {@link StateListener}.
    */
-  void addListener(StateListener listener, Executor executor) {
+  void addListener(StateListener listener, SerializingExecutor executor) {
     listeners.add(new StateListenerEntry(listener, executor));
   }
 
@@ -77,7 +79,7 @@ class ConnectivityStateManager {
   // executor is used?
   void gotoState(ConnectivityStateInfo newState) {
     if (state != newState) {
-      if (state == ConnectivityState.SHUTDOWN) {
+      if (state.getState() == ConnectivityState.SHUTDOWN) {
         throw new IllegalStateException("Cannot transition out of SHUTDOWN to " + newState);
       }
       state = newState;
@@ -97,7 +99,7 @@ class ConnectivityStateManager {
   }
 
   ConnectivityState getState() {
-    return state;
+    return state.getState();
   }
 
   private static class StateCallbackEntry {
@@ -120,9 +122,9 @@ class ConnectivityStateManager {
 
   private static class StateListenerEntry {
     final StateListener listener;
-    final Executor executor;
+    final SerializingExecutor executor;
 
-    StateListenerEntry(StateListener listener, Executor executor) {
+    StateListenerEntry(StateListener listener, SerializingExecutor executor) {
       this.listener = listener;
       this.executor = executor;
     }

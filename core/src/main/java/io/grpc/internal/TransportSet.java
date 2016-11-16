@@ -38,6 +38,7 @@ import com.google.common.base.Supplier;
 import io.grpc.CallOptions;
 import io.grpc.ClientCall;
 import io.grpc.ConnectivityState;
+import io.grpc.ConnectivityStateInfo;
 import io.grpc.EquivalentAddressGroup;
 import io.grpc.LoadBalancer;
 import io.grpc.ManagedChannel;
@@ -77,7 +78,7 @@ final class TransportSet implements WithLogId {
   private final Callback callback;
   private final ClientTransportFactory transportFactory;
   private final ScheduledExecutorService scheduledExecutor;
-  private final Executor channelExecutor;
+  private final SerializingExecutor channelExecutor;
 
   @GuardedBy("lock")
   private int nextAddressIndex;
@@ -109,7 +110,7 @@ final class TransportSet implements WithLogId {
 
   @GuardedBy("lock")
   private final InUseStateAggregator<ManagedClientTransport> inUseStateAggregator =
-      new InUseStateAggregator<ManagedClientTransport>(channelExecutor) {
+      new InUseStateAggregator<ManagedClientTransport>() {
         @Override
         void handleInUse() {
           callback.onInUse(TransportSet.this);
@@ -147,7 +148,8 @@ final class TransportSet implements WithLogId {
   TransportSet(EquivalentAddressGroup addressGroup, String authority, String userAgent,
       LoadBalancer<ClientTransport> loadBalancer, BackoffPolicy.Provider backoffPolicyProvider,
       ClientTransportFactory transportFactory, ScheduledExecutorService scheduledExecutor,
-      Supplier<Stopwatch> stopwatchSupplier, Executor channelExecutor, Callback callback) {
+      Supplier<Stopwatch> stopwatchSupplier, SerializingExecutor channelExecutor,
+      final Callback callback) {
     this.addressGroup = Preconditions.checkNotNull(addressGroup, "addressGroup");
     this.authority = authority;
     this.userAgent = userAgent;
@@ -188,7 +190,7 @@ final class TransportSet implements WithLogId {
         return null;
       }
       stateManager.gotoState(ConnectivityStateInfo.forNonError(ConnectivityState.CONNECTING));
-      runnable = startNewTransport(delayedTransport);
+      runnable = startNewTransport();
     }
     if (runnable != null) {
       runnable.run();
@@ -271,13 +273,13 @@ final class TransportSet implements WithLogId {
     }
   }
 
-  public ManagedChannel shutdown() {
+  public void shutdown() {
     ManagedClientTransport savedActiveTransport;
     ConnectionClientTransport savedPendingTransport;
     boolean terminated = false;
     synchronized (lock) {
       if (shutdown) {
-        return this;
+        return;
       }
       stateManager.gotoState(ConnectivityStateInfo.forNonError(ConnectivityState.SHUTDOWN));
       shutdown = true;
@@ -302,14 +304,24 @@ final class TransportSet implements WithLogId {
     if (terminated) {
       handleTermination();
     }
-    return this;
+    return;
   }
 
   private void handleTermination() {
     channelExecutor.execute(new Runnable() {
         @Override
         public void run() {
-          callback.onTerminated(this);
+          callback.onTerminated(TransportSet.this);
+        }
+      });
+  }
+
+  private void handleTransportInUseState(
+      final ManagedClientTransport transport, final boolean inUse) {
+    channelExecutor.execute(new Runnable() {
+        @Override
+        public void run() {
+          inUseStateAggregator.updateObjectInUse(transport, inUse);
         }
       });
   }
@@ -323,12 +335,6 @@ final class TransportSet implements WithLogId {
     for (ManagedClientTransport transport : transportsCopy) {
       transport.shutdownNow(reason);
     }
-  }
-
-  @Override
-  public ManagedChannel shutdownNow() {
-    shutdownNow(Status.UNAVAILABLE.withDescription("TransportSet shutdown as ManagedChannel"));
-    return this;
   }
 
   @GuardedBy("lock")
@@ -366,8 +372,8 @@ final class TransportSet implements WithLogId {
     public void transportReady() {}
 
     @Override
-    public void transportInUse(boolean inUse) {
-      inUseStateAggregator.updateObjectInUse(transport, inUse);
+    public void transportInUse(final boolean inUse) {
+      handleTransportInUseState(transport, inUse);
     }
 
     @Override
@@ -376,7 +382,7 @@ final class TransportSet implements WithLogId {
     @Override
     public void transportTerminated() {
       boolean terminated = false;
-      inUseStateAggregator.updateObjectInUse(transport, false);
+      handleTransportInUseState(transport, false);
       synchronized (lock) {
         transports.remove(transport);
         if (shutdown && transports.isEmpty()) {

@@ -34,6 +34,7 @@ package io.grpc.internal;
 import java.util.HashSet;
 
 import javax.annotation.concurrent.GuardedBy;
+import javax.annotation.concurrent.NotThreadSafe;
 
 /**
  * Aggregates the in-use state of a set of objects.
@@ -41,7 +42,6 @@ import javax.annotation.concurrent.GuardedBy;
 @NotThreadSafe
 abstract class InUseStateAggregator<T> {
 
-  private final Executor executor;
   private final HashSet<T> inUseObjects = new HashSet<T>();
   private final Runnable runHandleInUse = new Runnable() {
       @Override
@@ -57,24 +57,22 @@ abstract class InUseStateAggregator<T> {
       }
     };
 
-  InUseStateAggregator(Executor executor) {
-    this.executor = executor;
-  }
-
   /**
    * Update the in-use state of an object. Initially no object is in use.
+   *
+   * <p>This may call into {@link #handleInUse} or {@link #handleNotInUse} when appropriate.
    */
   final void updateObjectInUse(T object, boolean inUse) {
     int origSize = inUseObjects.size();
     if (inUse) {
       inUseObjects.add(object);
       if (origSize == 0) {
-        executor.execute(runHandleInUse);
+        handleInUse();
       }
     } else {
       boolean removed = inUseObjects.remove(object);
       if (removed && origSize == 1) {
-        executor.execute(runHandleNotInUse);
+        handleNotInUse();
       }
     }
   }

@@ -47,6 +47,8 @@ import io.grpc.ClientCall;
 import io.grpc.ClientInterceptor;
 import io.grpc.ClientInterceptors;
 import io.grpc.CompressorRegistry;
+import io.grpc.ConnectivityState;
+import io.grpc.ConnectivityStateInfo;
 import io.grpc.DecompressorRegistry;
 import io.grpc.EquivalentAddressGroup;
 import io.grpc.LoadBalancer;
@@ -129,6 +131,7 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
   private final ClientTransportFactory transportFactory;
   private final Executor executor;
   private final boolean usingSharedExecutor;
+  private final SerializingExecutor channelExecutor;
   private final Object lock = new Object();
 
   private final DecompressorRegistry decompressorRegistry;
@@ -185,9 +188,10 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
   private final HashSet<DelayedClientTransport> delayedTransports =
       new HashSet<DelayedClientTransport>();
 
+  // Must be accessed from channelExecutor
   @VisibleForTesting
   final InUseStateAggregator<Object> inUseStateAggregator =
-      new InUseStateAggregator<Object>(channelExecutor) {
+      new InUseStateAggregator<Object>() {
         @Override
         void handleInUse() {
           exitIdleMode();
@@ -227,7 +231,7 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
               IDLE_GRACE_PERIOD_MILLIS, TimeUnit.MILLISECONDS);
           return;
         }
-        // Enter idle mode
+        // Already in grace period, now it's time to enter idle mode.
         savedBalancer = graceLoadBalancer;
         graceLoadBalancer = null;
         oldResolver = nameResolver;
@@ -254,8 +258,6 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
   /**
    * Make the channel exit idle mode, if it's in it. Return a LoadBalancer that can be used for
    * making new requests. Return null if the channel is shutdown.
-   *
-   * <p>May be called under the lock.
    */
   @VisibleForTesting
   LoadBalancer<ClientTransport> exitIdleMode() {
@@ -265,14 +267,22 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
       if (shutdown) {
         return null;
       }
-      if (inUseStateAggregator.isInUse()) {
-        cancelIdleTimer();
-      } else {
-        // exitIdleMode() may be called outside of inUseStateAggregator, which may still in
-        // "not-in-use" state. If it's the case, we start the timer which will be soon cancelled if
-        // the aggregator receives actual uses.
-        rescheduleIdleTimer();
-      }
+      // Cancel the timer now, so that a racing due timer will not put Channel on idleness
+      // when the caller of exitIdleMode() is about to use the returned loadBalancer.
+      cancelIdleTimer();
+      // exitIdleMode() may be called outside of inUseStateAggregator.handleNotInUse() while
+      // isInUse() == false, in which case we still need to schedule the timer. 
+      // inUseStateAggregator must be accessed from channelExecutor.
+      channelExecutor.execute(new Runnable() {
+          @Override
+          public void run() {
+            if (!inUseStateAggregator.isInUse()) {
+              synchronized (lock) {
+                rescheduleIdleTimer();
+              }
+            }
+          }
+        });
       if (graceLoadBalancer != null) {
         // Exit grace period; timer already rescheduled above.
         loadBalancer = graceLoadBalancer;
@@ -299,7 +309,7 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
       }
     }
 
-    scheduledExecutor.execute(new NameResolverStartTask());
+    channelExecutor.execute(new NameResolverStartTask());
     return balancer;
   }
 
@@ -386,6 +396,7 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
       usingSharedExecutor = false;
       this.executor = executor;
     }
+    this.channelExecutor = new SerializingExecutor(this.executor);
     this.backoffPolicyProvider = backoffPolicyProvider;
     this.transportFactory =
         new CallCredentialsApplyingTransportFactory(transportFactory, this.executor);
@@ -676,7 +687,7 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
         if (ts == null) {
           ts = new TransportSet(addressGroup, authority(), userAgent, getCurrentLoadBalancer(),
               backoffPolicyProvider, transportFactory, scheduledExecutor, stopwatchSupplier,
-              executor, new TransportSet.Callback() {
+              channelExecutor, new TransportSet.Callback() {
                 @Override
                 public void onTerminated(TransportSet ts) {
                   synchronized (lock) {
@@ -797,10 +808,10 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
 
           @Override public void transportReady() {}
 
-          @Override public void transportInUse(boolean inUse) {
+          @Override public void transportInUse(final boolean inUse) {
             channelExecutor.execute(new Runnable() {
                 @Override
-                pulbic void run() {
+                public void run() {
                   inUseStateAggregator.updateObjectInUse(delayedTransport, inUse);
                 }
               });
@@ -851,7 +862,7 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
           transport = null;
           transportSet = new TransportSet(addressGroup, authority, userAgent,
               getCurrentLoadBalancer(), backoffPolicyProvider, transportFactory, scheduledExecutor,
-              stopwatchSupplier, executor, new TransportSet.Callback() {
+              stopwatchSupplier, channelExecutor, new TransportSet.Callback() {
                 @Override
                 public void onTerminated(TransportSet ts) {
                   synchronized (lock) {

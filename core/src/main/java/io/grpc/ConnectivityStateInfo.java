@@ -31,12 +31,18 @@
 
 package io.grpc;
 
+import com.google.common.base.Preconditions;
+
+import io.grpc.Status;
+
+import javax.annotation.Nullable;
+
 /**
  * A tuple of a {@link ConnectivityState} and an error {@link Status} that is present only with
  * {@link ConnectivityState.TRANSIENT_ERROR}.
  */
 @ExperimentalApi("https://github.com/grpc/grpc-java/issues/1771")
-public class ConnectivityStateInfo {
+public final class ConnectivityStateInfo {
   private final ConnectivityState state;
   @Nullable private final Status error;
 
@@ -46,7 +52,7 @@ public class ConnectivityStateInfo {
    * @throw IllegalArgumentException if {@code state} is {@code TRANSIENT_ERROR}.
    */
   public static ConnectivityStateInfo forNonError(ConnectivityState state) {
-    Preconditions.checkArgument(state != ConnectivityState.TRANSIENT_ERROR,
+    Preconditions.checkArgument(state != ConnectivityState.TRANSIENT_FAILURE,
         "state is TRANSIENT_ERROR. Use forError() instead");
     return new ConnectivityStateInfo(state, null);
   }
@@ -54,12 +60,21 @@ public class ConnectivityStateInfo {
   /**
    * Returns an instance for {@code TRANSIENT_ERROR}, associated with an error status.
    */
-  public static ConnectivityStateInfo forError(State error) {
+  public static ConnectivityStateInfo forError(Status error) {
     Preconditions.checkNotNull(error, "error is null");
-    return new ConnectivityStateInfo(ConnectivityStateInfo.TRANSIENT_ERROR, error);
+    return new ConnectivityStateInfo(ConnectivityState.TRANSIENT_FAILURE, error);
   }
 
-  private ConnectivityStateInfo(ConnectivityState state, State, error) {
+  public ConnectivityState getState() {
+    return state;
+  }
+
+  @Nullable
+  public Status getError() {
+    return error;
+  }
+
+  private ConnectivityStateInfo(ConnectivityState state, Status error) {
     this.state = Preconditions.checkNotNull(state, "state is null");
     this.error = error;
   }
