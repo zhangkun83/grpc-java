@@ -38,6 +38,7 @@ import com.google.common.base.Suppliers;
 
 import io.grpc.CallOptions;
 import io.grpc.Context;
+import io.grpc.LoadBalancer2.SubchannelPicker;
 import io.grpc.LoadBalancer2;
 import io.grpc.LoadBalancer2.PickResult;
 import io.grpc.LoadBalancer2.Subchannel;
@@ -101,6 +102,13 @@ class DelayedClientTransport implements ManagedClientTransport {
   @Nullable
   private Status backoffStatus;
 
+  /**
+   * The last picker that {@link #reprocess} has used.
+   */
+  @GuardedBy("lock")
+  @Nullable
+  private SubchannelPicker lastPicker;
+
   DelayedClientTransport(Executor streamCreationExecutor) {
     this.streamCreationExecutor = streamCreationExecutor;
   }
@@ -126,28 +134,55 @@ class DelayedClientTransport implements ManagedClientTransport {
   public final ClientStream newStream(MethodDescriptor<?, ?> method, Metadata headers,
       CallOptions callOptions, StatsTraceContext statsTraceCtx) {
     Supplier<ClientTransport> supplier = transportSupplier;
-    if (supplier == null) {
+    SubchannelPicker picker = lastPicker;
+    if (supplier == null && picker == null) {
       synchronized (lock) {
         // Check again, since it may have changed while waiting for lock
         supplier = transportSupplier;
-        if (supplier == null && !shutdown) {
+        picker = lastPicker;
+        if (supplier == null && picker == null && !shutdown) {
           if (backoffStatus != null && !callOptions.isWaitForReady()) {
             return new FailingClientStream(backoffStatus);
           }
-          PendingStream pendingStream = new PendingStream(method, headers, callOptions,
-              statsTraceCtx);
-          pendingStreams.add(pendingStream);
-          if (pendingStreams.size() == 1) {
-            listener.transportInUse(true);
-          }
-          return pendingStream;
+          return createPendingStream(method, headers, callOptions, statsTraceCtx);
         }
       }
     }
     if (supplier != null) {
       return supplier.get().newStream(method, headers, callOptions, statsTraceCtx);
     }
+    if (picker != null) {
+      while (true) {
+        PickResult pickResult = picker.pickSubchannel(
+            callOptions.getAffinity(), headers);
+        ClientTransport transport = GrpcUtil.getTransportFromPickResult(
+            pickResult, callOptions.isWaitForReady());
+        if (transport != null) {
+          return transport.newStream(method, headers, callOptions, statsTraceCtx);
+        }
+        // This picker's conclusion is "buffer".  If there hasn't been a newer picker set (possible
+        // race with reprocess()), we will buffer it.  Otherwise, will try with the new picker.
+        synchronized (lock) {
+          if (picker == lastPicker) {
+            return createPendingStream(method, headers, callOptions, statsTraceCtx);
+          }
+          picker = lastPicker;
+        }
+      }
+    }
     return new FailingClientStream(Status.UNAVAILABLE.withDescription("transport shutdown"));
+  }
+
+  @GuardedBy("lock")
+  private PendingStream createPendingStream(MethodDescriptor<?, ?> method, Metadata headers,
+      CallOptions callOptions, StatsTraceContext statsTraceCtx) {
+    PendingStream pendingStream = new PendingStream(method, headers, callOptions,
+        statsTraceCtx);
+    pendingStreams.add(pendingStream);
+    if (pendingStreams.size() == 1) {
+      listener.transportInUse(true);
+    }
+    return pendingStream;
   }
 
   @Override
@@ -389,11 +424,14 @@ class DelayedClientTransport implements ManagedClientTransport {
    *
    * <p>This method <strong>must not</strong> be called concurrently, either with itself or with
    * {@link #setTransportSupplier}/{@link #setTransport}.
+   *
+   * @return the version number of the given picker.
    */
-  final void reprocess(LoadBalancer2.SubchannelPicker picker) {
+  final void reprocess(SubchannelPicker picker) {
     ArrayList<PendingStream> toProcess;
     ArrayList<PendingStream> toRemove = new ArrayList<PendingStream>();
     synchronized (lock) {
+      lastPicker = picker;
       if (pendingStreams == null || pendingStreams.isEmpty()) {
         return;
       }
@@ -403,9 +441,9 @@ class DelayedClientTransport implements ManagedClientTransport {
     for (final PendingStream stream : toProcess) {
       PickResult pickResult = picker.pickSubchannel(
           stream.callOptions.getAffinity(), stream.headers);
-      final ClientTransport realTransport = GrpcUtil.getTransportFromPickResult(
+      final ClientTransport transport = GrpcUtil.getTransportFromPickResult(
           pickResult, stream.callOptions.isWaitForReady());
-      if (realTransport != null) {
+      if (transport != null) {
         Executor executor = streamCreationExecutor;
         // createRealStream may be expensive. It will start real streams on the transport. If
         // there are pending requests, they will be serialized too, which may be expensive. Since
@@ -416,7 +454,7 @@ class DelayedClientTransport implements ManagedClientTransport {
         executor.execute(new Runnable() {
             @Override
             public void run() {
-              stream.createRealStream(realTransport);
+              stream.createRealStream(transport);
             }
           });
         toRemove.add(stream);

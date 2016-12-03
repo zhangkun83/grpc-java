@@ -377,6 +377,11 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
         // TODO(zhangkun83): right now channelExecutor may throw if channel has shut down, which may
         // shutdown the app executor which channelExecutor is running on.  It won't be a problem
         // after we switch channelExecutor to thread-less.
+        //
+        // TODO(zhangkun83): Race between exitIdleMode() could cancel the idle timer, and idle timer
+        // shuts down the LoadBalancer which shuts down subchannels.  However, Subchannels is
+        // shutdown after a delay, giving enough time for the caller to call newStream() on it.  So,
+        // it doesn't seem to be a problem.
         channelExecutor.execute(new Runnable() {
             @Override
             public void run() {
