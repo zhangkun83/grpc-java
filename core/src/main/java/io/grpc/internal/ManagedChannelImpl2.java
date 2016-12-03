@@ -52,8 +52,11 @@ import io.grpc.CompressorRegistry;
 import io.grpc.ConnectivityStateInfo;
 import io.grpc.DecompressorRegistry;
 import io.grpc.EquivalentAddressGroup;
+import io.grpc.LoadBalancer2.PickResult;
+import io.grpc.LoadBalancer2.SubchannelPicker;
 import io.grpc.LoadBalancer2;
 import io.grpc.ManagedChannel;
+import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
 import io.grpc.NameResolver;
 import io.grpc.ResolvedServerInfoGroup;
@@ -99,27 +102,6 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
 
   static final long IDLE_TIMEOUT_MILLIS_DISABLE = -1;
 
-  /**
-   * The time after idleTimeoutMillis expires before idleness takes effect. The time before
-   * idleTimeoutMillis expires is part of a fast path for acquiring the load balancer. After
-   * idleTimeoutMillis expires a slow path takes effect with extra synchronization.
-   *
-   * <p>Transports having open streams prevents entering idle mode. However, this creates an
-   * inherent race between acquiring a transport, which can't be done in idle mode, and the RPC
-   * actually being created on that transport, which inhibits idle mode. Thus we reset the idle
-   * timer when acquiring a transport, and impose a minimum idle time (IDLE_MODE_MIN_TIMEOUT_MILLIS)
-   * to make the chances of racing very small. If we do race, then the RPC will spuriously fail
-   * because the transport chosen was shut down.
-   *
-   * <p>For heavy users, resetting the idle timer each RPC becomes highly contended. We instead only
-   * need to reset the timer when it is close to expiring. We do the equivalent by having two
-   * periods: a reduced regular idle time period and the extra time as a grace period. We ignore the
-   * race during the regular idle time period, but any acquisition during the grace period must
-   * reset the timer.
-   */
-  @VisibleForTesting
-  static final long IDLE_GRACE_PERIOD_MILLIS = TimeUnit.SECONDS.toMillis(1);
-
   private static final ClientTransport SHUTDOWN_TRANSPORT =
       new FailingClientTransport(Status.UNAVAILABLE.withDescription("Channel is shutdown"));
 
@@ -143,7 +125,7 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
 
   private final SharedResourceHolder.Resource<ScheduledExecutorService> timerService;
   private final Supplier<Stopwatch> stopwatchSupplier;
-  /** The timout before entering idle mode, less {@link #IDLE_GRACE_PERIOD_MILLIS}. */
+  /** The timout before entering idle mode. */
   private final long idleTimeoutMillis;
   private final CensusContextFactory censusFactory;
 
@@ -166,18 +148,13 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
   // TODO(zhangkun83): enforce it
   private NameResolver nameResolver;
 
-  // {@code null} when idle or when in grace idle period.  Must be modified from channelExecutor.
+  // null when idle.  Must be modified from channelExecutor.
   // TODO(zhangkun83): enforce it
   @Nullable
   private LoadBalancer2 loadBalancer;
 
-  // TODO(zhangkun83): what happens between the grace period with the picker?
-  private volatile LoadBalancer2.SubchannelPicker picker;
-
-  /** non-{code null} iff channel is in grace idle period. */
-  @GuardedBy("lock")
   @Nullable
-  private LoadBalancer2 graceLoadBalancer;
+  private volatile SubchannelPicker subchannelPicker;
 
   // TODO(zhangkun83): enforce the lock requirement
   @GuardedBy("lock")
@@ -220,7 +197,7 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
                 NameResolver nameResolverCopy;
                 synchronized (lock) {
                   checkState(shutdown, "Channel must have been shut down");
-                  loadBalancerCopy = getCurrentLoadBalancer();
+                  loadBalancerCopy = loadBalancer;
                   nameResolverCopy = nameResolver;
                 }
                 if (loadBalancerCopy != null) {
@@ -278,16 +255,6 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
         }
       };
 
-  // Make IdleModeTimer run from channelExecutor
-  private Runnable wrapIdleModeTimer(IdleModeTimer timer) {
-    return new LogExceptionRunnable(new Runnable() {
-        @Override
-        public void run() {
-          channelExecutor.execute(timer);
-        }
-      });
-  }
-
   // Run from channelExecutor
   private class IdleModeTimer implements Runnable {
     @GuardedBy("lock")
@@ -302,18 +269,8 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
           // Race detected: this task started before cancelIdleTimer() could cancel it.
           return;
         }
-        if (loadBalancer != null) {
-          // Enter grace period.
-          graceLoadBalancer = loadBalancer;
-          loadBalancer = null;
-          assert idleModeTimer == this;
-          idleModeTimerFuture = scheduledExecutor.schedule(wrapIdleModeTimer(idleModeTimer),
-              IDLE_GRACE_PERIOD_MILLIS, TimeUnit.MILLISECONDS);
-          return;
-        }
-        // Already in grace period, now it's time to enter idle mode
-        savedBalancer = graceLoadBalancer;
-        graceLoadBalancer = null;
+        savedBalancer = loadBalancer;
+        loadBalancer = null;
         oldResolver = nameResolver;
         nameResolver = getNameResolver(target, nameResolverFactory, nameResolverParams);
       }
@@ -330,71 +287,42 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
   private IdleModeTimer idleModeTimer;
 
   /**
-   * Make the channel exit idle mode, if it's in it. Return a LoadBalancer that can be used for
-   * making new requests. Return null if the channel is shutdown.
+   * Make the channel exit idle mode, if it's in it.
    *
-   * <p>Called from either channelExecutor, or app thread.
+   * <p>Must be called from channelExecutor
    */
   @VisibleForTesting
-  LoadBalancer2 exitIdleMode() {
+  void exitIdleMode() {
     final LoadBalancer2 balancer;
     final NameResolver resolver;
     synchronized (lock) {
       if (shutdown) {
-        return null;
+        return;
       }
       // Cancel the timer now, so that a racing due timer will not put Channel on idleness
       // when the caller of exitIdleMode() is about to use the returned loadBalancer.
       cancelIdleTimer();
       // exitIdleMode() may be called outside of inUseStateAggregator.handleNotInUse() while
       // isInUse() == false, in which case we still need to schedule the timer.
-      // inUseStateAggregator must be accessed from channelExecutor.
-      channelExecutor.execute(new Runnable() {
-          @Override
-          public void run() {
-            if (!inUseStateAggregator.isInUse()) {
-              synchronized (lock) {
-                rescheduleIdleTimer();
-              }
-            }
-          }
-        });
-      if (graceLoadBalancer != null) {
-        // Exit grace period; timer already rescheduled above.
-        loadBalancer = graceLoadBalancer;
-        graceLoadBalancer = null;
+      if (!inUseStateAggregator.isInUse()) {
+        synchronized (lock) {
+          rescheduleIdleTimer();
+        }
       }
       if (loadBalancer != null) {
-        return loadBalancer;
+        return;
       }
-      LbHelperImpl helper = new LbHelperImpl();
+      resolver = this.nameResolver;
+      LbHelperImpl helper = new LbHelperImpl(resolver);
       balancer = loadBalancerFactory.newLoadBalancer(helper);
       helper.lb = balancer;
       this.loadBalancer = balancer;
-      resolver = this.nameResolver;
     }
-    class NameResolverStartTask implements Runnable {
-      @Override
-      public void run() {
-        NameResolverListenerImpl listener = new NameResolverListenerImpl(balancer);
-        // This may trigger quite a few non-trivial work in LoadBalancer and NameResolver,
-        // we don't want to do it in the lock.
-        try {
-          resolver.start(listener);
-        } catch (Throwable t) {
-          listener.onError(Status.fromThrowable(t));
-        }
-      }
-    }
-
-    channelExecutor.execute(new NameResolverStartTask());
-    return balancer;
-  }
-
-  @VisibleForTesting
-  boolean isInIdleGracePeriod() {
-    synchronized (lock) {
-      return graceLoadBalancer != null;
+    NameResolverListenerImpl listener = new NameResolverListenerImpl(balancer);
+    try {
+      resolver.start(listener);
+    } catch (Throwable t) {
+      listener.onError(Status.fromThrowable(t));
     }
   }
 
@@ -424,7 +352,13 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
     }
     cancelIdleTimer();
     idleModeTimer = new IdleModeTimer();
-    idleModeTimerFuture = scheduledExecutor.schedule(wrapIdleModeTimer(idleModeTimer),
+    idleModeTimerFuture = scheduledExecutor.schedule(
+        new LogExceptionRunnable(new Runnable() {
+            @Override
+            public void run() {
+              channelExecutor.execute(idleModeTimer);
+            }
+          }),
         idleTimeoutMillis, TimeUnit.MILLISECONDS);
   }
 
@@ -437,16 +371,39 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
 
   private final ClientTransportProvider transportProvider = new ClientTransportProvider() {
     @Override
-    public ClientTransport get(CallOptions callOptions) {
-      LoadBalancer2 balancer = loadBalancer;
-      if (balancer == null) {
-        // Current state is either idle or in grace period
-        balancer = exitIdleMode();
+    public ClientTransport get(CallOptions callOptions, Metadata headers) {
+      SubchannelPicker pickerCopy = subchannelPicker;
+      if (pickerCopy == null) {
+        // TODO(zhangkun83): right now channelExecutor may throw if channel has shut down, which may
+        // shutdown the app executor which channelExecutor is running on.  It won't be a problem
+        // after we switch channelExecutor to thread-less.
+        channelExecutor.execute(new Runnable() {
+            @Override
+            public void run() {
+              exitIdleMode();
+            }
+          });
+        // TODO(zhangkun83): race: what if application newStream() after delayed transport reprocess
+        // the new picker?  The stream would be buffered until the next picker.  Looks versioning
+        // the picker in delayed transport is necessary.  Delayed transport would save the last
+        // picker, and use a while-loop in reprocess() which only stops until all pending streams
+        // has been seen by the last picker.
+        //
+        // We don't need grace period, and it doesn't help with this race.
+        //
+        // Let me assume here the race has already been handled in delayed transport.
+
+        // If channel is shut down, delayedTransport is also shut down which will fail the stream
+        // properly.
+        return delayedTransport;
       }
-      if (balancer == null) {
-        return SHUTDOWN_TRANSPORT;
+      PickResult pickResult = pickerCopy.pickSubchannel(callOptions.getAffinity(), headers);
+      ClientTransport transport = GrpcUtil.getTransportFromPickResult(
+          pickResult, callOptions.isWaitForReady());
+      if (transport != null) {
+        return transport;
       }
-      return balancer.pickTransport(callOptions.getAffinity());
+      return delayedTransport;
     }
   };
 
@@ -483,11 +440,10 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
     if (idleTimeoutMillis == IDLE_TIMEOUT_MILLIS_DISABLE) {
       this.idleTimeoutMillis = idleTimeoutMillis;
     } else {
-      assert IDLE_GRACE_PERIOD_MILLIS
-          <= AbstractManagedChannelImplBuilder.IDLE_MODE_MIN_TIMEOUT_MILLIS;
-      checkArgument(idleTimeoutMillis >= IDLE_GRACE_PERIOD_MILLIS,
+      checkArgument(
+          idleTimeoutMillis >= AbstractManagedChannelImplBuilder.IDLE_MODE_MIN_TIMEOUT_MILLIS,
           "invalid idleTimeoutMillis %s", idleTimeoutMillis);
-      this.idleTimeoutMillis = idleTimeoutMillis - IDLE_GRACE_PERIOD_MILLIS;
+      this.idleTimeoutMillis = idleTimeoutMillis;
     }
     this.decompressorRegistry = decompressorRegistry;
     this.compressorRegistry = compressorRegistry;
@@ -557,6 +513,7 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
         return this;
       }
       shutdown = true;
+      subchannelPicker = null;
     }
     delayedTransport.shutdown();
     synchronized (lock) {
@@ -632,15 +589,6 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
     return interceptorChannel.authority();
   }
 
-  /** Returns {@code null} iff channel is in idle state. */
-  @GuardedBy("lock")
-  private LoadBalancer2 getCurrentLoadBalancer() {
-    if (loadBalancer != null) {
-      return loadBalancer;
-    }
-    return graceLoadBalancer;
-  }
-
   private class RealChannel extends Channel {
     @Override
     public <ReqT, RespT> ClientCall<ReqT, RespT> newCall(MethodDescriptor<ReqT, RespT> method,
@@ -698,6 +646,10 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
     // TODO(zhangkun83): set this to what newLoadBalancer() returns.
     LoadBalancer2 lb;
     final NameResolver nr;
+
+    LbHelperImpl(NameResolver nr) {
+      this.nr = checkNotNull(nr, "NameResolver");
+    }
 
     @Override
     public SubchannelImpl createSubchannel(EquivalentAddressGroup addressGroup, Attributes attrs) {
@@ -764,6 +716,17 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
     @Override
     public void runSerialized(Runnable task) {
       channelExecutor.execute(task);
+    }
+
+    @Override
+    public void updatePicker(final SubchannelPicker picker) {
+      runSerialized(new Runnable() {
+          @Override
+          public void run() {
+            subchannelPicker = picker;
+            delayedTransport.reprocess(picker);
+          }
+        });
     }
   };
 
@@ -834,8 +797,8 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
                 subchannel.shutdown();
               }
             }), 5, TimeUnit.SECONDS);
+          return;
         }
-        return;
       }
       // scheduledExecutor == null, which is possible only when Channel has already been terminated.
       // Though may not be necessary, we'll do it anyway.

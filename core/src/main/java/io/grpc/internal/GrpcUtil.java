@@ -535,6 +535,34 @@ public final class GrpcUtil {
     }
   }
 
+  /**
+   * The canonical implementation of {@link WithLogId#getLogId}.
+   */
+  public static String getLogId(WithLogId subject) {
+    return subject.getClass().getSimpleName() + "@" + Integer.toHexString(subject.hashCode());
+  }
+
+  /**
+   * Returns a transport out of a PickResult, or {@code null} if the result is "buffer".
+   */
+  @Nullable
+  static ClientTransport getTransportFromPickResult(PickResult result, boolean isWaitForReady) {
+    ClientTransport transport;
+    Subchannel subchannel = result.getSubchannel();
+    if (subchannel != null) {
+      transport = ((SubchannelImpl) subchannel).obtainActiveTransport();
+    } else {
+      transport = null;
+    }
+    if (transport != null) {
+      return transport;
+    }
+    if (!result.getStatus().isOk() && !isWaitForReady) {
+      return new FailingClientTransport(result.getStatus());
+    }
+    return null;
+  }
+
   private GrpcUtil() {}
 
   private static String getImplementationVersion() {

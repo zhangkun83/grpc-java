@@ -403,13 +403,8 @@ class DelayedClientTransport implements ManagedClientTransport {
     for (final PendingStream stream : toProcess) {
       PickResult pickResult = picker.pickSubchannel(
           stream.callOptions.getAffinity(), stream.headers);
-      final ClientTransport realTransport;
-      Subchannel subchannel = pickResult.getSubchannel();
-      if (subchannel != null) {
-        realTransport = ((SubchannelImpl) subchannel).obtainActiveTransport();
-      } else {
-        realTransport = null;
-      }
+      final ClientTransport realTransport = GrpcUtil.getTransportFromPickResult(
+          pickResult, stream.callOptions.isWaitForReady());
       if (realTransport != null) {
         Executor executor = streamCreationExecutor;
         // createRealStream may be expensive. It will start real streams on the transport. If
@@ -425,10 +420,7 @@ class DelayedClientTransport implements ManagedClientTransport {
             }
           });
         toRemove.add(stream);
-      } else if (!pickResult.getStatus().isOk() && !stream.callOptions.isWaitForReady()) {
-        stream.setStream(new FailingClientStream(pickResult.getStatus()));
-        toRemove.add(stream);
-      }  // other cases: stay pending
+      }  // else: stay pending
     }
 
     synchronized (lock) {
