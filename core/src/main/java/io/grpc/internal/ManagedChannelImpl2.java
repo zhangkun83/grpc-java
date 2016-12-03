@@ -34,6 +34,8 @@ package io.grpc.internal;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
+import static io.grpc.ConnectivityState.IDLE;
+import static io.grpc.ConnectivityState.TRANSIENT_FAILURE;
 
 import com.google.census.CensusContextFactory;
 import com.google.common.annotations.VisibleForTesting;
@@ -47,9 +49,10 @@ import io.grpc.ClientCall;
 import io.grpc.ClientInterceptor;
 import io.grpc.ClientInterceptors;
 import io.grpc.CompressorRegistry;
+import io.grpc.ConnectivityStateInfo;
 import io.grpc.DecompressorRegistry;
 import io.grpc.EquivalentAddressGroup;
-import io.grpc.LoadBalancer;
+import io.grpc.LoadBalancer2;
 import io.grpc.ManagedChannel;
 import io.grpc.MethodDescriptor;
 import io.grpc.NameResolver;
@@ -66,6 +69,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Executor;
@@ -73,6 +77,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.regex.Pattern;
@@ -83,8 +88,8 @@ import javax.annotation.concurrent.ThreadSafe;
 
 /** A communication channel for making outgoing RPCs. */
 @ThreadSafe
-public final class ManagedChannelImpl extends ManagedChannel implements WithLogId {
-  private static final Logger log = Logger.getLogger(ManagedChannelImpl.class.getName());
+public final class ManagedChannelImpl2 extends ManagedChannel implements WithLogId {
+  private static final Logger log = Logger.getLogger(ManagedChannelImpl2.class.getName());
 
   // Matching this pattern means the target string is a URI target or at least intended to be one.
   // A URI target must be an absolute hierarchical URI.
@@ -118,17 +123,19 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
   private static final ClientTransport SHUTDOWN_TRANSPORT =
       new FailingClientTransport(Status.UNAVAILABLE.withDescription("Channel is shutdown"));
 
-  @VisibleForTesting
-  static final ClientTransport IDLE_MODE_TRANSPORT =
-      new FailingClientTransport(Status.INTERNAL.withDescription("Channel is in idle mode"));
+  private static final Status SHUTDOWN_NOW_STATUS =
+      Status.UNAVAILABLE.withDescription("Channel shutdownNow invoked");
 
   private final String target;
   private final NameResolver.Factory nameResolverFactory;
   private final Attributes nameResolverParams;
-  private final LoadBalancer.Factory loadBalancerFactory;
+  private final LoadBalancer2.Factory loadBalancerFactory;
   private final ClientTransportFactory transportFactory;
   private final Executor executor;
   private final boolean usingSharedExecutor;
+  // TODO(zhangkun83): this is now running on app executor, which is not ideal and have the risk of
+  // starving.  We should turn it into a thread-less executor.
+  private final SerializingExecutor channelExecutor;
   private final Object lock = new Object();
 
   private final DecompressorRegistry decompressorRegistry;
@@ -143,6 +150,7 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
   /**
    * Executor that runs deadline timers for requests.
    */
+  @GuardedBy("lock")
   private ScheduledExecutorService scheduledExecutor;
 
   private final BackoffPolicy.Provider backoffPolicyProvider;
@@ -154,54 +162,115 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
   private final Channel interceptorChannel;
   @Nullable private final String userAgent;
 
-  // Never be null. Must be modified under lock.
+  // Never be null. Must be with channelExecutor.
+  // TODO(zhangkun83): enforce it
   private NameResolver nameResolver;
 
-  /** {@code null} when idle or when in grace idle period. "lock" must be held when modifying. */
+  // {@code null} when idle or when in grace idle period.  Must be modified from channelExecutor.
+  // TODO(zhangkun83): enforce it
   @Nullable
-  private volatile LoadBalancer<ClientTransport> loadBalancer;
+  private LoadBalancer2 loadBalancer;
+
+  // TODO(zhangkun83): what happens between the grace period with the picker?
+  private volatile LoadBalancer2.SubchannelPicker picker;
 
   /** non-{code null} iff channel is in grace idle period. */
   @GuardedBy("lock")
   @Nullable
-  private LoadBalancer<ClientTransport> graceLoadBalancer;
+  private LoadBalancer2 graceLoadBalancer;
 
-  /**
-   * Maps EquivalentAddressGroups to transports for that server. "lock" must be held when mutating.
-   */
-  // Even though we set a concurrency level of 1, this is better than Collections.synchronizedMap
-  // because it doesn't need to acquire a lock for reads.
-  private final ConcurrentMap<EquivalentAddressGroup, TransportSet> transports =
-      new ConcurrentHashMap<EquivalentAddressGroup, TransportSet>(16, .75f, 1);
-
-  /**
-   * TransportSets that are shutdown (but not yet terminated) due to channel idleness or channel
-   * shut down.
-   */
+  // TODO(zhangkun83): enforce the lock requirement
   @GuardedBy("lock")
-  private final HashSet<TransportSet> decommissionedTransports = new HashSet<TransportSet>();
+  private final Set<InternalSubchannel> subchannels = new HashSet<InternalSubchannel>(16, .75f);
 
+  // TODO(zhangkun83): enforce the lock requirement
   @GuardedBy("lock")
-  private final HashSet<DelayedClientTransport> delayedTransports =
-      new HashSet<DelayedClientTransport>();
+  private final Set<InternalSubchannel> oobChannels = new HashSet<InternalSubchannel>(1, .75f);
 
-  @VisibleForTesting
-  final InUseStateAggregator<Object> inUseStateAggregator =
-      new InUseStateAggregator<Object>() {
+  // TODO(zhangkun83): enforce the lock requirement
+  @GuardedBy("lock")
+  private final DelayedClientTransport delayedTransport;
+
+  // Called within delayedTransport's lock
+  private final ManagedClientTransport.Listener delayedTransportListener =
+      new ManagedClientTransport.Listener() {
         @Override
-        Object getLock() {
-          return lock;
+        public void transportShutdown(Status s) {
+          synchronized (lock) {
+            checkState(shutdown, "Channel must have been shut down");
+          }
         }
 
         @Override
-        @GuardedBy("lock")
+        public void transportReady() {
+          // Don't care
+        }
+
+        @Override
+        public void transportInUse(boolean inUse) {
+          // TODO(zhangkun83): report to aggregator
+        }
+
+        @Override
+        public void transportTerminated() {
+          channelExecutor.execute(new Runnable() {
+              @Override
+              public void run() {
+                LoadBalancer2 loadBalancerCopy;
+                NameResolver nameResolverCopy;
+                synchronized (lock) {
+                  checkState(shutdown, "Channel must have been shut down");
+                  loadBalancerCopy = getCurrentLoadBalancer();
+                  nameResolverCopy = nameResolver;
+                }
+                if (loadBalancerCopy != null) {
+                  loadBalancerCopy.shutdown();
+                }
+                if (nameResolverCopy != null) {
+                  nameResolverCopy.shutdown();
+                }
+
+                // Only after we shut down LoadBalancer, will we shutdown the subchannels for
+                // shutdownNow.  If it had been done earlier, LoadBalancer may have created new
+                // subchannels after that.
+                List<InternalSubchannel> subchannelsCopy = null;
+                List<InternalSubchannel> oobChannelsCopy = null;
+                synchronized (lock) {
+                  if (shutdownNowed) {
+                    subchannelsCopy = new ArrayList<InternalSubchannel>(subchannels);
+                    oobChannelsCopy = new ArrayList<InternalSubchannel>(oobChannels);
+                  }
+                }
+                Status nowStatus = Status.UNAVAILABLE.withDescription("Channel shutdownNow invoked");
+                if (subchannelsCopy != null) {
+                  for (InternalSubchannel subchannel : subchannelsCopy) {
+                    subchannel.shutdownNow(SHUTDOWN_NOW_STATUS);
+                  }
+                }
+                if (oobChannelsCopy != null) {
+                  for (InternalSubchannel oobChannel : oobChannelsCopy) {
+                    oobChannel.shutdownNow(SHUTDOWN_NOW_STATUS);
+                  }
+                }
+                maybeTerminateChannel();
+              }
+            });
+        }
+      };
+
+  // Must be accessed from channelExecutor
+  // TODO(zhangkun83): enforce it
+  @VisibleForTesting
+  final InUseStateAggregator2<Object> inUseStateAggregator =
+      new InUseStateAggregator2<Object>() {
+        @Override
         void handleInUse() {
           exitIdleMode();
         }
 
-        @GuardedBy("lock")
         @Override
         void handleNotInUse() {
+          // TODO(zhangkun83): grab the lock or not
           if (shutdown) {
             return;
           }
@@ -209,14 +278,24 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
         }
       };
 
+  // Make IdleModeTimer run from channelExecutor
+  private Runnable wrapIdleModeTimer(IdleModeTimer timer) {
+    return new LogExceptionRunnable(new Runnable() {
+        @Override
+        public void run() {
+          channelExecutor.execute(timer);
+        }
+      });
+  }
+
+  // Run from channelExecutor
   private class IdleModeTimer implements Runnable {
     @GuardedBy("lock")
     boolean cancelled;
 
     @Override
     public void run() {
-      ArrayList<TransportSet> transportsCopy = new ArrayList<TransportSet>();
-      LoadBalancer<ClientTransport> savedBalancer;
+      LoadBalancer2 savedBalancer;
       NameResolver oldResolver;
       synchronized (lock) {
         if (cancelled) {
@@ -228,21 +307,15 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
           graceLoadBalancer = loadBalancer;
           loadBalancer = null;
           assert idleModeTimer == this;
-          idleModeTimerFuture = scheduledExecutor.schedule(new LogExceptionRunnable(idleModeTimer),
+          idleModeTimerFuture = scheduledExecutor.schedule(wrapIdleModeTimer(idleModeTimer),
               IDLE_GRACE_PERIOD_MILLIS, TimeUnit.MILLISECONDS);
           return;
         }
-        // Enter idle mode
+        // Already in grace period, now it's time to enter idle mode
         savedBalancer = graceLoadBalancer;
         graceLoadBalancer = null;
         oldResolver = nameResolver;
         nameResolver = getNameResolver(target, nameResolverFactory, nameResolverParams);
-        transportsCopy.addAll(transports.values());
-        transports.clear();
-        decommissionedTransports.addAll(transportsCopy);
-      }
-      for (TransportSet ts : transportsCopy) {
-        ts.shutdown();
       }
       savedBalancer.shutdown();
       oldResolver.shutdown();
@@ -260,24 +333,32 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
    * Make the channel exit idle mode, if it's in it. Return a LoadBalancer that can be used for
    * making new requests. Return null if the channel is shutdown.
    *
-   * <p>May be called under the lock.
+   * <p>Called from either channelExecutor, or app thread.
    */
   @VisibleForTesting
-  LoadBalancer<ClientTransport> exitIdleMode() {
-    final LoadBalancer<ClientTransport> balancer;
+  LoadBalancer2 exitIdleMode() {
+    final LoadBalancer2 balancer;
     final NameResolver resolver;
     synchronized (lock) {
       if (shutdown) {
         return null;
       }
-      if (inUseStateAggregator.isInUse()) {
-        cancelIdleTimer();
-      } else {
-        // exitIdleMode() may be called outside of inUseStateAggregator, which may still in
-        // "not-in-use" state. If it's the case, we start the timer which will be soon cancelled if
-        // the aggregator receives actual uses.
-        rescheduleIdleTimer();
-      }
+      // Cancel the timer now, so that a racing due timer will not put Channel on idleness
+      // when the caller of exitIdleMode() is about to use the returned loadBalancer.
+      cancelIdleTimer();
+      // exitIdleMode() may be called outside of inUseStateAggregator.handleNotInUse() while
+      // isInUse() == false, in which case we still need to schedule the timer.
+      // inUseStateAggregator must be accessed from channelExecutor.
+      channelExecutor.execute(new Runnable() {
+          @Override
+          public void run() {
+            if (!inUseStateAggregator.isInUse()) {
+              synchronized (lock) {
+                rescheduleIdleTimer();
+              }
+            }
+          }
+        });
       if (graceLoadBalancer != null) {
         // Exit grace period; timer already rescheduled above.
         loadBalancer = graceLoadBalancer;
@@ -286,7 +367,9 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
       if (loadBalancer != null) {
         return loadBalancer;
       }
-      balancer = loadBalancerFactory.newLoadBalancer(nameResolver.getServiceAuthority(), tm);
+      LbHelperImpl helper = new LbHelperImpl();
+      balancer = loadBalancerFactory.newLoadBalancer(helper);
+      helper.lb = balancer;
       this.loadBalancer = balancer;
       resolver = this.nameResolver;
     }
@@ -304,7 +387,7 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
       }
     }
 
-    scheduledExecutor.execute(new NameResolverStartTask());
+    channelExecutor.execute(new NameResolverStartTask());
     return balancer;
   }
 
@@ -334,20 +417,16 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
     }
   }
 
-  @GuardedBy("lock")
+  // Always run from channelExecutor
   private void rescheduleIdleTimer() {
     if (idleTimeoutMillis == IDLE_TIMEOUT_MILLIS_DISABLE) {
       return;
     }
     cancelIdleTimer();
     idleModeTimer = new IdleModeTimer();
-    idleModeTimerFuture = scheduledExecutor.schedule(new LogExceptionRunnable(idleModeTimer),
+    idleModeTimerFuture = scheduledExecutor.schedule(wrapIdleModeTimer(idleModeTimer),
         idleTimeoutMillis, TimeUnit.MILLISECONDS);
   }
-
-  @GuardedBy("lock")
-  private final HashSet<OobTransportProviderImpl> oobTransports =
-      new HashSet<OobTransportProviderImpl>();
 
   @GuardedBy("lock")
   private boolean shutdown;
@@ -359,7 +438,7 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
   private final ClientTransportProvider transportProvider = new ClientTransportProvider() {
     @Override
     public ClientTransport get(CallOptions callOptions) {
-      LoadBalancer<ClientTransport> balancer = loadBalancer;
+      LoadBalancer2 balancer = loadBalancer;
       if (balancer == null) {
         // Current state is either idle or in grace period
         balancer = exitIdleMode();
@@ -371,15 +450,16 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
     }
   };
 
-  ManagedChannelImpl(String target, BackoffPolicy.Provider backoffPolicyProvider,
+  ManagedChannelImpl2(String target, BackoffPolicy.Provider backoffPolicyProvider,
       NameResolver.Factory nameResolverFactory, Attributes nameResolverParams,
-      LoadBalancer.Factory loadBalancerFactory, ClientTransportFactory transportFactory,
+      LoadBalancer2.Factory loadBalancerFactory, ClientTransportFactory transportFactory,
       DecompressorRegistry decompressorRegistry, CompressorRegistry compressorRegistry,
       SharedResourceHolder.Resource<ScheduledExecutorService> timerService,
       Supplier<Stopwatch> stopwatchSupplier, long idleTimeoutMillis,
       @Nullable Executor executor, @Nullable String userAgent,
       List<ClientInterceptor> interceptors, CensusContextFactory censusFactory) {
     this.target = checkNotNull(target, "target");
+    this.delayedTransport.start(delayedTransportListener);
     this.nameResolverFactory = checkNotNull(nameResolverFactory, "nameResolverFactory");
     this.nameResolverParams = checkNotNull(nameResolverParams, "nameResolverParams");
     this.nameResolver = getNameResolver(target, nameResolverFactory, nameResolverParams);
@@ -391,6 +471,8 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
       usingSharedExecutor = false;
       this.executor = executor;
     }
+    this.channelExecutor = new SerializingExecutor(this.executor);
+    this.delayedTransport = new DelayedClientTransport(this.channelExecutor);
     this.backoffPolicyProvider = backoffPolicyProvider;
     this.transportFactory =
         new CallCredentialsApplyingTransportFactory(transportFactory, this.executor);
@@ -469,45 +551,17 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
    * cancelled.
    */
   @Override
-  public ManagedChannelImpl shutdown() {
-    ArrayList<TransportSet> transportsCopy = new ArrayList<TransportSet>();
-    ArrayList<DelayedClientTransport> delayedTransportsCopy =
-        new ArrayList<DelayedClientTransport>();
-    ArrayList<OobTransportProviderImpl> oobTransportsCopy =
-        new ArrayList<OobTransportProviderImpl>();
-    LoadBalancer<ClientTransport> balancer;
-    NameResolver resolver;
+  public ManagedChannelImpl2 shutdown() {
     synchronized (lock) {
       if (shutdown) {
         return this;
       }
       shutdown = true;
-      // After shutdown there are no new calls, so no new cancellation tasks are needed
-      scheduledExecutor = SharedResourceHolder.release(timerService, scheduledExecutor);
+    }
+    delayedTransport.shutdown();
+    synchronized (lock) {
       maybeTerminateChannel();
-      if (!terminated) {
-        transportsCopy.addAll(transports.values());
-        transports.clear();
-        decommissionedTransports.addAll(transportsCopy);
-        delayedTransportsCopy.addAll(delayedTransports);
-        oobTransportsCopy.addAll(oobTransports);
-      }
-      balancer = getCurrentLoadBalancer();
-      resolver = nameResolver;
       cancelIdleTimer();
-    }
-    if (balancer != null) {
-      balancer.shutdown();
-    }
-    resolver.shutdown();
-    for (TransportSet ts : transportsCopy) {
-      ts.shutdown();
-    }
-    for (DelayedClientTransport transport : delayedTransportsCopy) {
-      transport.shutdown();
-    }
-    for (OobTransportProviderImpl provider : oobTransportsCopy) {
-      provider.close();
     }
     if (log.isLoggable(Level.FINE)) {
       log.log(Level.FINE, "[{0}] Shutting down", getLogId());
@@ -521,7 +575,7 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
    * return {@code false} immediately after this method returns.
    */
   @Override
-  public ManagedChannelImpl shutdownNow() {
+  public ManagedChannelImpl2 shutdownNow() {
     synchronized (lock) {
       // Short-circuiting not strictly necessary, but prevents transports from needing to handle
       // multiple shutdownNow invocations.
@@ -531,28 +585,10 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
       shutdownNowed = true;
     }
     shutdown();
-    List<TransportSet> transportsCopy;
-    List<DelayedClientTransport> delayedTransportsCopy;
-    List<OobTransportProviderImpl> oobTransportsCopy;
-    synchronized (lock) {
-      transportsCopy = new ArrayList<TransportSet>(transports.values());
-      transportsCopy.addAll(decommissionedTransports);
-      delayedTransportsCopy = new ArrayList<DelayedClientTransport>(delayedTransports);
-      oobTransportsCopy = new ArrayList<OobTransportProviderImpl>(oobTransports);
-    }
     if (log.isLoggable(Level.FINE)) {
       log.log(Level.FINE, "[{0}] Shutting down now", getLogId());
     }
-    Status nowStatus = Status.UNAVAILABLE.withDescription("Channel shutdownNow invoked");
-    for (TransportSet ts : transportsCopy) {
-      ts.shutdownNow(nowStatus);
-    }
-    for (DelayedClientTransport transport : delayedTransportsCopy) {
-      transport.shutdownNow(nowStatus);
-    }
-    for (OobTransportProviderImpl provider : oobTransportsCopy) {
-      provider.shutdownNow(nowStatus);
-    }
+    delayedTransport.shutdownNow(SHUTDOWN_NOW_STATUS);
     return this;
   }
 
@@ -598,7 +634,7 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
 
   /** Returns {@code null} iff channel is in idle state. */
   @GuardedBy("lock")
-  private LoadBalancer<ClientTransport> getCurrentLoadBalancer() {
+  private LoadBalancer2 getCurrentLoadBalancer() {
     if (loadBalancer != null) {
       return loadBalancer;
     }
@@ -611,7 +647,7 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
         CallOptions callOptions) {
       Executor executor = callOptions.getExecutor();
       if (executor == null) {
-        executor = ManagedChannelImpl.this.executor;
+        executor = ManagedChannelImpl2.this.executor;
       }
       StatsTraceContext statsTraceCtx = StatsTraceContext.newClientContext(
           method.getFullMethodName(), censusFactory, stopwatchSupplier);
@@ -636,111 +672,98 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
   /**
    * Terminate the channel if termination conditions are met.
    */
-  @GuardedBy("lock")
+  // TODO(zhangkun83): make sure it's run from channelExecutor
   private void maybeTerminateChannel() {
-    if (terminated) {
-      return;
-    }
-    if (shutdown && transports.isEmpty() && decommissionedTransports.isEmpty()
-        && delayedTransports.isEmpty() && oobTransports.isEmpty()) {
-      if (log.isLoggable(Level.INFO)) {
-        log.log(Level.INFO, "[{0}] Terminated", getLogId());
+    synchronized (lock) {
+      if (terminated) {
+        return;
       }
-      terminated = true;
-      lock.notifyAll();
-      if (usingSharedExecutor) {
-        SharedResourceHolder.release(GrpcUtil.SHARED_CHANNEL_EXECUTOR, (ExecutorService) executor);
+      if (shutdown && subchannels.isEmpty() && oobChannels.isEmpty()) {
+        if (log.isLoggable(Level.INFO)) {
+          log.log(Level.INFO, "[{0}] Terminated", getLogId());
+        }
+        terminated = true;
+        lock.notifyAll();
+        if (usingSharedExecutor) {
+          SharedResourceHolder.release(GrpcUtil.SHARED_CHANNEL_EXECUTOR, (ExecutorService) executor);
+        }
+        scheduledExecutor = SharedResourceHolder.release(timerService, scheduledExecutor);
+        // Release the transport factory so that it can deallocate any resources.
+        transportFactory.close();
       }
-      // Release the transport factory so that it can deallocate any resources.
-      transportFactory.close();
     }
   }
 
-  @VisibleForTesting
-  final TransportManager<ClientTransport> tm = new TransportManager<ClientTransport>() {
-    @Override
-    public void updateRetainedTransports(Collection<EquivalentAddressGroup> addrs) {
-      // TODO(zhangkun83): warm-up new servers and discard removed servers.
-    }
+  private class LbHelperImpl extends LoadBalancer2.Helper {
+    // TODO(zhangkun83): set this to what newLoadBalancer() returns.
+    LoadBalancer2 lb;
+    final NameResolver nr;
 
     @Override
-    public ClientTransport getTransport(final EquivalentAddressGroup addressGroup) {
+    public SubchannelImpl createSubchannel(EquivalentAddressGroup addressGroup, Attributes attrs) {
       checkNotNull(addressGroup, "addressGroup");
-      TransportSet ts = transports.get(addressGroup);
-      if (ts != null) {
-        return ts.obtainActiveTransport();
+      checkNotNull(attrs, "attrs");
+      final SubchannelImplImpl subchannel = new SubchannelImplImpl(attrs);
+      InternalSubchannel internalSubchannel = new InternalSubchannel(
+            addressGroup, authority(), userAgent, backoffPolicyProvider, transportFactory,
+            scheduledExecutor, stopwatchSupplier, channelExecutor,
+            new InternalSubchannel.Callback() {
+              // All callbacks are run in channelExecutor
+              @Override
+              void onTerminated(InternalSubchannel is) {
+                synchronized (lock) {
+                  subchannels.remove(is);
+                  maybeTerminateChannel();
+                }
+              }
+
+              @Override
+              void onStateChange(InternalSubchannel is, ConnectivityStateInfo newState) {
+                if ((newState.getState() == TRANSIENT_FAILURE || newState.getState() == IDLE)) {
+                  nr.refresh();
+                }
+                lb.handleSubchannelState(subchannel, newState);
+              }
+
+              @Override
+              public void onInUse(InternalSubchannel is) {
+                inUseStateAggregator.updateObjectInUse(is, true);
+              }
+
+              @Override
+              public void onNotInUse(InternalSubchannel is) {
+                inUseStateAggregator.updateObjectInUse(is, false);
+              }
+            });
+      subchannel.subchannel = internalSubchannel;
+      if (log.isLoggable(Level.FINE)) {
+        log.log(Level.FINE, "[{0}] {1} created for {2}",
+            new Object[] {getLogId(), internalSubchannel.getLogId(), addressGroup});
       }
       synchronized (lock) {
-        if (shutdown) {
-          return SHUTDOWN_TRANSPORT;
-        }
-        if (getCurrentLoadBalancer() == null) {
-          return IDLE_MODE_TRANSPORT;
-        }
-        ts = transports.get(addressGroup);
-        if (ts == null) {
-          ts = new TransportSet(addressGroup, authority(), userAgent, getCurrentLoadBalancer(),
-              backoffPolicyProvider, transportFactory, scheduledExecutor, stopwatchSupplier,
-              executor, new TransportSet.Callback() {
-                @Override
-                public void onTerminated(TransportSet ts) {
-                  synchronized (lock) {
-                    transports.remove(addressGroup);
-                    decommissionedTransports.remove(ts);
-                    maybeTerminateChannel();
-                  }
-                }
-
-                @Override
-                public void onAllAddressesFailed() {
-                  nameResolver.refresh();
-                }
-
-                @Override
-                public void onConnectionClosedByServer(Status status) {
-                  nameResolver.refresh();
-                }
-
-                @Override
-                public void onInUse(TransportSet ts) {
-                  inUseStateAggregator.updateObjectInUse(ts, true);
-                }
-
-                @Override
-                public void onNotInUse(TransportSet ts) {
-                  inUseStateAggregator.updateObjectInUse(ts, false);
-                }
-              });
-          if (log.isLoggable(Level.FINE)) {
-            log.log(Level.FINE, "[{0}] {1} created for {2}",
-                new Object[] {getLogId(), ts.getLogId(), addressGroup});
-          }
-          transports.put(addressGroup, ts);
-        }
+        subchannels.add(internalSubchannel);
       }
-      return ts.obtainActiveTransport();
+      return subchannel;
     }
 
     @Override
-    public Channel makeChannel(ClientTransport transport) {
-      return new SingleTransportChannel(
-          censusFactory, transport, executor, scheduledExecutor, authority(), stopwatchSupplier);
+    public ManagedChannel createOobChannel(EquivalentAddressGroup addressGroup, String authority) {
+      throw new UnsupportedOperationException();
     }
 
     @Override
-    public ClientTransport createFailingTransport(Status error) {
-      return new FailingClientTransport(error);
+    public String getAuthority() {
+      return ManagedChannelImpl2.this.authority();
     }
 
     @Override
-    public InterimTransport<ClientTransport> createInterimTransport() {
-      return new InterimTransportImpl();
+    public NameResolver.Factory getNameResolverFactory() {
+      return nameResolverFactory;
     }
 
     @Override
-    public OobTransportProvider<ClientTransport> createOobTransportProvider(
-        EquivalentAddressGroup addressGroup, String authority) {
-      return new OobTransportProviderImpl(addressGroup, authority);
+    public void runSerialized(Runnable task) {
+      channelExecutor.execute(task);
     }
   };
 
@@ -750,9 +773,9 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
   }
 
   private static class NameResolverListenerImpl implements NameResolver.Listener {
-    final LoadBalancer<ClientTransport> balancer;
+    final LoadBalancer2 balancer;
 
-    NameResolverListenerImpl(LoadBalancer<ClientTransport> balancer) {
+    NameResolverListenerImpl(LoadBalancer2 balancer) {
       this.balancer = balancer;
     }
 
@@ -780,108 +803,58 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
     }
   }
 
-  private class InterimTransportImpl implements InterimTransport<ClientTransport> {
-    private final DelayedClientTransport delayedTransport;
-    private boolean closed;
+  private final class SubchannelImplImpl extends SubchannelImpl {
+    InternalSubchannel subchannel;
+    final AtomicBoolean shutdownRequested = new AtomicBoolean(false);
+    final Attributes attrs;
 
-    InterimTransportImpl() {
-      delayedTransport = new DelayedClientTransport(executor);
-      delayedTransport.start(new ManagedClientTransport.Listener() {
-          @Override public void transportShutdown(Status status) {}
+    SubchannelImplImpl(Attributes attrs) {
+      this.attrs = checkNotNull(attrs, "attrs");
+    }
 
-          @Override public void transportTerminated() {
-            synchronized (lock) {
-              delayedTransports.remove(delayedTransport);
-              maybeTerminateChannel();
-            }
-            inUseStateAggregator.updateObjectInUse(delayedTransport, false);
-          }
+    @Override
+    ClientTransport obtainActiveTransport() {
+      return subchannel.obtainActiveTransport();
+    }
 
-          @Override public void transportReady() {}
-
-          @Override public void transportInUse(boolean inUse) {
-            inUseStateAggregator.updateObjectInUse(delayedTransport, inUse);
-          }
-        });
-      boolean savedShutdown;
-      synchronized (lock) {
-        delayedTransports.add(delayedTransport);
-        savedShutdown = shutdown;
+    @Override
+    public void shutdown() {
+      if (!shutdownRequested.compareAndSet(false, true)) {
+        return;
       }
-      if (savedShutdown) {
-        delayedTransport.setTransport(SHUTDOWN_TRANSPORT);
-        delayedTransport.shutdown();
-      }
-    }
-
-    @Override
-    public ClientTransport transport() {
-      checkState(!closed, "already closed");
-      return delayedTransport;
-    }
-
-    @Override
-    public void closeWithRealTransports(Supplier<ClientTransport> realTransports) {
-      delayedTransport.setTransportSupplier(realTransports);
-      delayedTransport.shutdown();
-    }
-
-    @Override
-    public void closeWithError(Status error) {
-      delayedTransport.shutdownNow(error);
-    }
-  }
-
-  private class OobTransportProviderImpl implements OobTransportProvider<ClientTransport> {
-    private final TransportSet transportSet;
-    private final ClientTransport transport;
-
-    OobTransportProviderImpl(EquivalentAddressGroup addressGroup, String authority) {
       synchronized (lock) {
-        if (shutdown) {
-          transportSet = null;
-          transport = SHUTDOWN_TRANSPORT;
-        } else if (getCurrentLoadBalancer() == null) {
-          transportSet = null;
-          transport = IDLE_MODE_TRANSPORT;
-        } else {
-          transport = null;
-          transportSet = new TransportSet(addressGroup, authority, userAgent,
-              getCurrentLoadBalancer(), backoffPolicyProvider, transportFactory, scheduledExecutor,
-              stopwatchSupplier, executor, new TransportSet.Callback() {
-                @Override
-                public void onTerminated(TransportSet ts) {
-                  synchronized (lock) {
-                    oobTransports.remove(OobTransportProviderImpl.this);
-                    maybeTerminateChannel();
-                  }
-                }
-              });
-          oobTransports.add(this);
+        // There is a race between 1) a transport is picked and newStream() is called on it,
+        // and 2) its Subchannel is shut down by LoadBalancer (e.g., because of address change). If
+        // (2) wins, the app will see a spurious error. We work this around by delaying
+        // shutdown of Subchannel for a few seconds here.
+        if (scheduledExecutor != null) {
+          scheduledExecutor.schedule(new LogExceptionRunnable(new Runnable() {
+              @Override
+              public void run() {
+                subchannel.shutdown();
+              }
+            }), 5, TimeUnit.SECONDS);
         }
+        return;
       }
+      // scheduledExecutor == null, which is possible only when Channel has already been terminated.
+      // Though may not be necessary, we'll do it anyway.
+      subchannel.shutdown();
     }
 
     @Override
-    public ClientTransport get() {
-      if (transport != null) {
-        return transport;
-      } else {
-        return transportSet.obtainActiveTransport();
-      }
+    public void requestConnection() {
+      subchannel.obtainActiveTransport();
     }
 
     @Override
-    public void close() {
-      if (transportSet != null) {
-        transportSet.shutdown();
-      }
+    public EquivalentAddressGroup getAddresses() {
+      return subchannel.getAddressGroup();
     }
 
-    void shutdownNow(Status reason) {
-      if (transportSet != null) {
-        transportSet.shutdownNow(reason);
-      }
+    @Override
+    public Attributes getAttributes() {
+      return attrs;
     }
   }
 }

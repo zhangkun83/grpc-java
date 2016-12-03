@@ -173,10 +173,10 @@ final class InternalSubchannel implements WithLogId {
   /**
    * Returns a READY transport that will be used to create new streams.
    *
-   * <p>Returns {@code null} if the state is not READY.
+   * <p>Returns {@code null} if the state is not READY.  Will try to connect if state is IDLE.
    */
   @Nullable
-  final ClientTransport obtainActiveTransport() {
+  ClientTransport obtainActiveTransport() {
     ClientTransport savedTransport = activeTransport;
     if (savedTransport != null) {
       return savedTransport;
@@ -349,6 +349,10 @@ final class InternalSubchannel implements WithLogId {
     for (ManagedClientTransport transport : transportsCopy) {
       transport.shutdownNow(reason);
     }
+  }
+
+  EquivalentAddressGroup getAddressGroup() {
+    return addressGroup;
   }
 
   @GuardedBy("lock")
