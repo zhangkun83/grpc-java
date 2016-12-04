@@ -105,9 +105,9 @@ class DelayedClientTransport implements ManagedClientTransport {
   /**
    * The last picker that {@link #reprocess} has used.
    */
-  @GuardedBy("lock")
+  // "lock" must be held when assigning to lastPicker
   @Nullable
-  private SubchannelPicker lastPicker;
+  private volatile SubchannelPicker lastPicker;
 
   DelayedClientTransport(Executor streamCreationExecutor) {
     this.streamCreationExecutor = streamCreationExecutor;
@@ -123,8 +123,11 @@ class DelayedClientTransport implements ManagedClientTransport {
    * If the transport has acquired a transport {@link Supplier}, then returned stream is delegated
    * from its supplier.
    *
-   * <p>If the new stream to be created is with fail fast call option and the delayed transport is
-   * in a back-off interval, then a {@link FailingClientStream} is returned.
+   * <p>Otherwise, if a {@link SubchannelPicker} is being, or has been provided via {@link
+   * #reprocess}, the last picker will be consulted.
+   *
+   * <p>Otherwise, if the new stream to be created is with fail fast call option and the delayed
+   * transport is in a back-off interval, then a {@link FailingClientStream} is returned.
    *
    * <p>If it is not the above cases and the delayed transport is not shutdown, then a
    * {@link PendingStream} is returned; if the transport is shutdown, then a
@@ -419,11 +422,11 @@ class DelayedClientTransport implements ManagedClientTransport {
    * Use the picker to try picking a transport for every pending stream and pending ping, proceed
    * the stream or ping if the pick is successful, otherwise keep it pending.
    *
-   * <p>If new pending streams are created while reprocess() is in progress, there is no guarantee
-   * that the pending streams will or will not be processed by this picker.
+   * <p>This method may be called concurrently with {@code newStream()}, and it's safe.  All pending
+   * streams will be served by the latest picker as soon as possible.
    *
-   * <p>This method <strong>must not</strong> be called concurrently, either with itself or with
-   * {@link #setTransportSupplier}/{@link #setTransport}.
+   * <p>This method <strong>must not</strong> be called concurrently, with itself or with {@link
+   * #setTransportSupplier}/{@link #setTransport}.
    *
    * @return the version number of the given picker.
    */
