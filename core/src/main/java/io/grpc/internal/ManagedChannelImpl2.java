@@ -1,5 +1,5 @@
 /*
- * Copyright 2014, Google Inc. All rights reserved.
+ * Copyright 2016, Google Inc. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
@@ -75,6 +75,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
@@ -86,7 +87,6 @@ import java.util.logging.Logger;
 import java.util.regex.Pattern;
 
 import javax.annotation.Nullable;
-import javax.annotation.concurrent.GuardedBy;
 import javax.annotation.concurrent.ThreadSafe;
 
 /** A communication channel for making outgoing RPCs. */
@@ -118,7 +118,6 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
   // TODO(zhangkun83): this is now running on app executor, which is not ideal and have the risk of
   // starving.  We should turn it into a thread-less executor.
   private final SerializingExecutor channelExecutor;
-  private final Object lock = new Object();
 
   private final DecompressorRegistry decompressorRegistry;
   private final CompressorRegistry compressorRegistry;
@@ -132,8 +131,8 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
   /**
    * Executor that runs deadline timers for requests.
    */
-  @GuardedBy("lock")
-  private ScheduledExecutorService scheduledExecutor;
+  // Must be assigned from channelExecutor
+  private volatile ScheduledExecutorService scheduledExecutor;
 
   private final BackoffPolicy.Provider backoffPolicyProvider;
 
@@ -144,24 +143,23 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
   private final Channel interceptorChannel;
   @Nullable private final String userAgent;
 
-  // Never be null. Must be with channelExecutor.
-  // TODO(zhangkun83): enforce it
+  // Only null after channel is terminated. Must be assigned from the channelExecutor.
   private NameResolver nameResolver;
 
-  // null when idle.  Must be modified from channelExecutor.
-  // TODO(zhangkun83): enforce it
+  // null when channel is in idle mode.  Must be assigned from channelExecutor.
   @Nullable
   private LoadBalancer2 loadBalancer;
 
+  // Must be assigned from channelExecutor.  null if channel is in idle mode.
   @Nullable
   private volatile SubchannelPicker subchannelPicker;
 
-  // TODO(zhangkun83): enforce the lock requirement
-  @GuardedBy("lock")
+  // Must be mutated from channelExecutor
+  // If any monitoring hook to be added later needs to get a snapshot of this Set, we could
+  // switch to a ConcurrentHashMap.
   private final Set<InternalSubchannel> subchannels = new HashSet<InternalSubchannel>(16, .75f);
 
-  // TODO(zhangkun83): enforce the lock requirement
-  @GuardedBy("lock")
+  // Must be mutated from channelExecutor
   private final Set<InternalSubchannel> oobChannels = new HashSet<InternalSubchannel>(1, .75f);
 
   // reprocess() must be run from channelExecutor
@@ -175,30 +173,29 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
   //   1b subchannelPicker <- null
   //   1c delayedTransport.shutdown()
   // 2. delayedTransport terminated: stop stream-creation functionality
-  //   2a delayedTransportTerminated <- true
+  //   2a terminating <- true
   //   2b loadBalancer <- null
   //   2c nameResolver <- null
   //   2d loadBalancer.shutdown()
   //     * LoadBalancer will shutdown subchannels and OOB channels
   //   2e nameResolver.shutdown()
   // 3. All subchannels and OOB channels terminated: Channel considered terminated
-  @GuardedBy("lock")
-  private boolean shutdown;
-  @GuardedBy("lock")
+
+  private final AtomicBoolean shutdown = new AtomicBoolean(false);
+  // Must be mutated from channelExecutor
   private boolean shutdownNowed;
-  @GuardedBy("lock")
-  private boolean delayedTransportTerminated;
-  @GuardedBy("lock")
-  private boolean terminated;
+  // Must be mutated from channelExecutor
+  private volatile boolean terminating;
+  // Must be mutated from channelExecutor
+  private volatile boolean terminated;
+  private final CountDownLatch terminatedLatch = new CountDownLatch(1);
 
   // Called within delayedTransport's lock
   private final ManagedClientTransport.Listener delayedTransportListener =
       new ManagedClientTransport.Listener() {
         @Override
         public void transportShutdown(Status s) {
-          synchronized (lock) {
-            checkState(shutdown, "Channel must have been shut down");
-          }
+          checkState(shutdown.get(), "Channel must have been shut down");
         }
 
         @Override
@@ -207,8 +204,13 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
         }
 
         @Override
-        public void transportInUse(boolean inUse) {
-          // TODO(zhangkun83): report to aggregator
+        public void transportInUse(final boolean inUse) {
+          channelExecutor.execute(new Runnable() {
+              @Override
+              public void run() {
+                inUseStateAggregator.updateObjectInUse(delayedTransport, inUse);
+              }
+            });
         }
 
         @Override
@@ -216,21 +218,15 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
           channelExecutor.execute(new Runnable() {
               @Override
               public void run() {
-                LoadBalancer2 loadBalancerCopy;
-                NameResolver nameResolverCopy;
-                synchronized (lock) {
-                  checkState(shutdown, "Channel must have been shut down");
-                  loadBalancerCopy = loadBalancer;
-                  nameResolverCopy = nameResolver;
+                checkState(shutdown.get(), "Channel must have been shut down");
+                terminating = true;
+                if (loadBalancer != null) {
+                  loadBalancer.shutdown();
                   loadBalancer = null;
+                }
+                if (nameResolver != null) {
+                  nameResolver.shutdown();
                   nameResolver = null;
-                  delayedTransportTerminated = true;
-                }
-                if (loadBalancerCopy != null) {
-                  loadBalancerCopy.shutdown();
-                }
-                if (nameResolverCopy != null) {
-                  nameResolverCopy.shutdown();
                 }
 
                 // Only after we shut down LoadBalancer, will we shutdown the subchannels for
@@ -238,31 +234,29 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
                 // subchannels after that.
                 List<InternalSubchannel> subchannelsCopy = null;
                 List<InternalSubchannel> oobChannelsCopy = null;
-                synchronized (lock) {
-                  if (shutdownNowed) {
-                    subchannelsCopy = new ArrayList<InternalSubchannel>(subchannels);
-                    oobChannelsCopy = new ArrayList<InternalSubchannel>(oobChannels);
-                  }
-                }
-                Status nowStatus = Status.UNAVAILABLE.withDescription("Channel shutdownNow invoked");
-                if (subchannelsCopy != null) {
-                  for (InternalSubchannel subchannel : subchannelsCopy) {
-                    subchannel.shutdownNow(SHUTDOWN_NOW_STATUS);
-                  }
-                }
-                if (oobChannelsCopy != null) {
-                  for (InternalSubchannel oobChannel : oobChannelsCopy) {
-                    oobChannel.shutdownNow(SHUTDOWN_NOW_STATUS);
-                  }
-                }
+                maybeShutdownNowSubchannels();
                 maybeTerminateChannel();
               }
             });
         }
       };
 
+  // Must be called from channelExecutor
+  private void maybeShutdownNowSubchannels() {
+    Status nowStatus = Status.UNAVAILABLE.withDescription("Channel shutdownNow invoked");
+    if (shutdownNowed) {
+      for (InternalSubchannel subchannel : subchannels) {
+        subchannel.shutdownNow(SHUTDOWN_NOW_STATUS);
+      }
+      subchannels.clear();
+      for (InternalSubchannel oobChannel : oobChannels) {
+        oobChannel.shutdownNow(SHUTDOWN_NOW_STATUS);
+      }
+      oobChannels.clear();
+    }
+  }
+
   // Must be accessed from channelExecutor
-  // TODO(zhangkun83): enforce it
   @VisibleForTesting
   final InUseStateAggregator2<Object> inUseStateAggregator =
       new InUseStateAggregator2<Object>() {
@@ -273,8 +267,7 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
 
         @Override
         void handleNotInUse() {
-          // TODO(zhangkun83): grab the lock or not
-          if (shutdown) {
+          if (shutdown.get()) {
             return;
           }
           rescheduleIdleTimer();
@@ -283,32 +276,28 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
 
   // Run from channelExecutor
   private class IdleModeTimer implements Runnable {
-    @GuardedBy("lock")
+    // Only mutated from channelExecutor
     boolean cancelled;
 
     @Override
     public void run() {
-      LoadBalancer2 savedBalancer;
-      NameResolver oldResolver;
-      synchronized (lock) {
-        if (cancelled) {
-          // Race detected: this task started before cancelIdleTimer() could cancel it.
-          return;
-        }
-        savedBalancer = loadBalancer;
-        loadBalancer = null;
-        oldResolver = nameResolver;
-        nameResolver = getNameResolver(target, nameResolverFactory, nameResolverParams);
+      if (cancelled) {
+        // Race detected: this task was scheduled on channelExecutor before cancelIdleTimer()
+        // could cancel the timer.
+        return;
       }
-      savedBalancer.shutdown();
-      oldResolver.shutdown();
+      nameResolver.shutdown();
+      nameResolver = getNameResolver(target, nameResolverFactory, nameResolverParams);
+      loadBalancer.shutdown();
+      loadBalancer = null;
+      subchannelPicker = null;
     }
   }
 
-  @GuardedBy("lock")
+  // Must be used from channelExecutor
   @Nullable
   private ScheduledFuture<?> idleModeTimerFuture;
-  @GuardedBy("lock")
+  // Must be used from channelExecutor
   @Nullable
   private IdleModeTimer idleModeTimer;
 
@@ -319,49 +308,33 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
    */
   @VisibleForTesting
   void exitIdleMode() {
-    final LoadBalancer2 balancer;
-    final NameResolver resolver;
-    synchronized (lock) {
-      if (shutdown) {
-        return;
-      }
-      // Cancel the timer now, so that a racing due timer will not put Channel on idleness
-      // when the caller of exitIdleMode() is about to use the returned loadBalancer.
-      cancelIdleTimer();
-      // exitIdleMode() may be called outside of inUseStateAggregator.handleNotInUse() while
-      // isInUse() == false, in which case we still need to schedule the timer.
-      if (!inUseStateAggregator.isInUse()) {
-        synchronized (lock) {
-          rescheduleIdleTimer();
-        }
-      }
-      if (loadBalancer != null) {
-        return;
-      }
-      resolver = this.nameResolver;
-      LbHelperImpl helper = new LbHelperImpl(resolver);
-      balancer = loadBalancerFactory.newLoadBalancer(helper);
-      helper.lb = balancer;
-      this.loadBalancer = balancer;
+    if (shutdown.get()) {
+      return;
     }
-    NameResolverListenerImpl listener = new NameResolverListenerImpl(balancer);
+    // Cancel the timer now, so that a racing due timer will not put Channel on idleness
+    // when the caller of exitIdleMode() is about to use the returned loadBalancer.
+    cancelIdleTimer();
+    // exitIdleMode() may be called outside of inUseStateAggregator.handleNotInUse() while
+    // isInUse() == false, in which case we still need to schedule the timer.
+    if (!inUseStateAggregator.isInUse()) {
+      rescheduleIdleTimer();
+    }
+    if (loadBalancer != null) {
+      return;
+    }
+    LbHelperImpl helper = new LbHelperImpl(nameResolver);
+    helper.lb = loadBalancerFactory.newLoadBalancer(helper);
+    this.loadBalancer = helper.lb;
+
+    NameResolverListenerImpl listener = new NameResolverListenerImpl(helper.lb);
     try {
-      resolver.start(listener);
+      nameResolver.start(listener);
     } catch (Throwable t) {
       listener.onError(Status.fromThrowable(t));
     }
   }
 
-  // ErrorProne's GuardedByChecker can't figure out that the idleModeTimer is a nested instance of
-  // this particular instance. It is worried about something like:
-  // ManagedChannelImpl a = ...;
-  // ManagedChannelImpl b = ...;
-  // a.idleModeTimer = b.idleModeTimer;
-  // a.cancelIdleTimer(); // access of b.idleModeTimer is guarded by a.lock, not b.lock
-  //
-  // _We_ know that isn't happening, so we suppress the warning.
-  @SuppressWarnings("GuardedByChecker")
-  @GuardedBy("lock")
+  // Must be run from channelExecutor
   private void cancelIdleTimer() {
     if (idleModeTimerFuture != null) {
       idleModeTimerFuture.cancel(false);
@@ -392,33 +365,21 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
     @Override
     public ClientTransport get(CallOptions callOptions, Metadata headers) {
       SubchannelPicker pickerCopy = subchannelPicker;
+      if (shutdown.get()) {
+        // If channel is shut down, delayedTransport is also shut down which will fail the stream
+        // properly.
+        return delayedTransport;
+      }
       if (pickerCopy == null) {
         // TODO(zhangkun83): right now channelExecutor may throw if channel has shut down, which may
         // shutdown the app executor which channelExecutor is running on.  It won't be a problem
         // after we switch channelExecutor to thread-less.
-        //
-        // TODO(zhangkun83): Race between exitIdleMode() could cancel the idle timer, and idle timer
-        // shuts down the LoadBalancer which shuts down subchannels.  However, Subchannels is
-        // shutdown after a delay, giving enough time for the caller to call newStream() on it.  So,
-        // it doesn't seem to be a problem.
         channelExecutor.execute(new Runnable() {
             @Override
             public void run() {
               exitIdleMode();
             }
           });
-        // TODO(zhangkun83): race: what if application newStream() after delayed transport reprocess
-        // the new picker?  The stream would be buffered until the next picker.  Looks versioning
-        // the picker in delayed transport is necessary.  Delayed transport would save the last
-        // picker, and use a while-loop in reprocess() which only stops until all pending streams
-        // has been seen by the last picker.
-        //
-        // We don't need grace period, and it doesn't help with this race.
-        //
-        // Let me assume here the race has already been handled in delayed transport.
-
-        // If channel is shut down, delayedTransport is also shut down which will fail the stream
-        // properly.
         return delayedTransport;
       }
       PickResult pickResult = pickerCopy.pickSubchannel(callOptions.getAffinity(), headers);
@@ -532,18 +493,20 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
    */
   @Override
   public ManagedChannelImpl2 shutdown() {
-    synchronized (lock) {
-      if (shutdown) {
-        return this;
-      }
-      shutdown = true;
-      subchannelPicker = null;
+    if (log.isLoggable(Level.FINE)) {
+      log.log(Level.FINE, "[{0}] shutdown() called", getLogId());
+    }
+    if (!shutdown.compareAndSet(false, true)) {
+      return this;
     }
     delayedTransport.shutdown();
-    synchronized (lock) {
-      maybeTerminateChannel();
-      cancelIdleTimer();
-    }
+    channelExecutor.execute(new Runnable() {
+        @Override
+        public void run() {
+          maybeTerminateChannel();
+          cancelIdleTimer();
+        }
+      });
     if (log.isLoggable(Level.FINE)) {
       log.log(Level.FINE, "[{0}] Shutting down", getLogId());
     }
@@ -557,46 +520,37 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
    */
   @Override
   public ManagedChannelImpl2 shutdownNow() {
-    synchronized (lock) {
-      // Short-circuiting not strictly necessary, but prevents transports from needing to handle
-      // multiple shutdownNow invocations.
-      if (shutdownNowed) {
-        return this;
-      }
-      shutdownNowed = true;
+    if (log.isLoggable(Level.FINE)) {
+      log.log(Level.FINE, "[{0}] shutdownNow() called", getLogId());
     }
     shutdown();
-    if (log.isLoggable(Level.FINE)) {
-      log.log(Level.FINE, "[{0}] Shutting down now", getLogId());
-    }
     delayedTransport.shutdownNow(SHUTDOWN_NOW_STATUS);
+    channelExecutor.execute(new Runnable() {
+        @Override
+        public void run() {
+          if (shutdownNowed) {
+            return;
+          }
+          shutdownNowed = true;
+          maybeShutdownNowSubchannels();
+        }
+      });
     return this;
   }
 
   @Override
   public boolean isShutdown() {
-    synchronized (lock) {
-      return shutdown;
-    }
+    return shutdown.get();
   }
 
   @Override
   public boolean awaitTermination(long timeout, TimeUnit unit) throws InterruptedException {
-    synchronized (lock) {
-      long timeoutNanos = unit.toNanos(timeout);
-      long endTimeNanos = System.nanoTime() + timeoutNanos;
-      while (!terminated && (timeoutNanos = endTimeNanos - System.nanoTime()) > 0) {
-        TimeUnit.NANOSECONDS.timedWait(lock, timeoutNanos);
-      }
-      return terminated;
-    }
+    return terminatedLatch.await(timeout, unit);
   }
 
   @Override
   public boolean isTerminated() {
-    synchronized (lock) {
-      return terminated;
-    }
+    return terminated;
   }
 
   /*
@@ -644,30 +598,27 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
   /**
    * Terminate the channel if termination conditions are met.
    */
-  // TODO(zhangkun83): make sure it's run from channelExecutor
+  // Must be run from channelExecutor
   private void maybeTerminateChannel() {
-    synchronized (lock) {
-      if (terminated) {
-        return;
+    if (terminated) {
+      return;
+    }
+    if (shutdown.get() && subchannels.isEmpty() && oobChannels.isEmpty()) {
+      if (log.isLoggable(Level.INFO)) {
+        log.log(Level.INFO, "[{0}] Terminated", getLogId());
       }
-      if (shutdown && subchannels.isEmpty() && oobChannels.isEmpty()) {
-        if (log.isLoggable(Level.INFO)) {
-          log.log(Level.INFO, "[{0}] Terminated", getLogId());
-        }
-        terminated = true;
-        lock.notifyAll();
-        if (usingSharedExecutor) {
-          SharedResourceHolder.release(GrpcUtil.SHARED_CHANNEL_EXECUTOR, (ExecutorService) executor);
-        }
-        scheduledExecutor = SharedResourceHolder.release(timerService, scheduledExecutor);
-        // Release the transport factory so that it can deallocate any resources.
-        transportFactory.close();
+      terminated = true;
+      terminatedLatch.countDown();
+      if (usingSharedExecutor) {
+        SharedResourceHolder.release(GrpcUtil.SHARED_CHANNEL_EXECUTOR, (ExecutorService) executor);
       }
+      scheduledExecutor = SharedResourceHolder.release(timerService, scheduledExecutor);
+      // Release the transport factory so that it can deallocate any resources.
+      transportFactory.close();
     }
   }
 
   private class LbHelperImpl extends LoadBalancer2.Helper {
-    // TODO(zhangkun83): set this to what newLoadBalancer() returns.
     LoadBalancer2 lb;
     final NameResolver nr;
 
@@ -679,18 +630,20 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
     public SubchannelImpl createSubchannel(EquivalentAddressGroup addressGroup, Attributes attrs) {
       checkNotNull(addressGroup, "addressGroup");
       checkNotNull(attrs, "attrs");
+      ScheduledExecutorService scheduledExecutorCopy = scheduledExecutor;
+      checkState(scheduledExecutorCopy != null,
+          "scheduledExecutor is already cleared. Looks like you are calling this method after "
+          + "you've already shut down");
       final SubchannelImplImpl subchannel = new SubchannelImplImpl(attrs);
-      InternalSubchannel internalSubchannel = new InternalSubchannel(
+      final InternalSubchannel internalSubchannel = new InternalSubchannel(
             addressGroup, authority(), userAgent, backoffPolicyProvider, transportFactory,
-            scheduledExecutor, stopwatchSupplier, channelExecutor,
+            scheduledExecutorCopy, stopwatchSupplier, channelExecutor,
             new InternalSubchannel.Callback() {
               // All callbacks are run in channelExecutor
               @Override
               void onTerminated(InternalSubchannel is) {
-                synchronized (lock) {
-                  subchannels.remove(is);
-                  maybeTerminateChannel();
-                }
+                subchannels.remove(is);
+                maybeTerminateChannel();
               }
 
               @Override
@@ -716,9 +669,18 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
         log.log(Level.FINE, "[{0}] {1} created for {2}",
             new Object[] {getLogId(), internalSubchannel.getLogId(), addressGroup});
       }
-      synchronized (lock) {
-        subchannels.add(internalSubchannel);
-      }
+      channelExecutor.execute(new Runnable() {
+          @Override
+          public void run() {
+            if (terminating) {
+              internalSubchannel.shutdown();
+            } else if (!terminated) {
+              // If channel has not terminated, it will track the subchannel and block termination
+              // for it.
+              subchannels.add(internalSubchannel);
+            }
+          }
+        });
       return subchannel;
     }
 
@@ -809,24 +771,27 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
       if (!shutdownRequested.compareAndSet(false, true)) {
         return;
       }
-      synchronized (lock) {
-        // There is a race between 1) a transport is picked and newStream() is called on it, and 2)
-        // its Subchannel is shut down by LoadBalancer (e.g., because of address change). If (2)
-        // wins, the app will see a spurious error. We work this around by delaying shutdown of
-        // Subchannel for a few seconds here.
-        if (!delayedTransportTerminated && scheduledExecutor != null) {
-          scheduledExecutor.schedule(new LogExceptionRunnable(new Runnable() {
-              @Override
-              public void run() {
-                subchannel.shutdown();
-              }
-            }), 5, TimeUnit.SECONDS);
-          return;
-        }
+      ScheduledExecutorService scheduledExecutorCopy = scheduledExecutor;
+      // Add a delay to shutdown to deal with the race between 1) a transport being picked and
+      // newStream() being called on it, and 2) its Subchannel is shut down by LoadBalancer (e.g.,
+      // because of address change, or because LoadBalancer is shutdown by Channel entering idle
+      // mode). If (2) wins, the app will see a spurious error. We work this around by delaying
+      // shutdown of Subchannel for a few seconds here.
+      if (!terminating && scheduledExecutorCopy != null) {
+        scheduledExecutorCopy.schedule(new LogExceptionRunnable(new Runnable() {
+            @Override
+            public void run() {
+              subchannel.shutdown();
+            }
+          }), 5, TimeUnit.SECONDS);
+        return;
       }
+
       // Two possible ways to get here:
-      // 1. delayedTransportTerminated == true: no more real streams will be created, it's safe and
-      // also desirable to shutdown timely.
+      //
+      // 1. terminating == true: no more real streams will be created, it's safe and also desirable
+      // to shutdown timely.
+      //
       // 2. scheduledExecutor == null: possible only when Channel has already been terminated.
       // Though may not be necessary, we'll do it anyway.
       subchannel.shutdown();
