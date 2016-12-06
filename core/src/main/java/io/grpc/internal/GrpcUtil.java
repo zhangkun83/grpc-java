@@ -41,6 +41,8 @@ import com.google.common.base.Supplier;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 
+import io.grpc.LoadBalancer2.PickResult;
+import io.grpc.LoadBalancer2.Subchannel;
 import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.internal.SharedResourceHolder.Resource;
@@ -533,13 +535,6 @@ public final class GrpcUtil {
           throw new IllegalArgumentException(String.format("Invalid timeout unit: %s", unit));
       }
     }
-  }
-
-  /**
-   * The canonical implementation of {@link WithLogId#getLogId}.
-   */
-  public static String getLogId(WithLogId subject) {
-    return subject.getClass().getSimpleName() + "@" + Integer.toHexString(subject.hashCode());
   }
 
   /**

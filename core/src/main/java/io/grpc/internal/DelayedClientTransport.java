@@ -38,10 +38,8 @@ import com.google.common.base.Suppliers;
 
 import io.grpc.CallOptions;
 import io.grpc.Context;
-import io.grpc.LoadBalancer2.SubchannelPicker;
-import io.grpc.LoadBalancer2;
 import io.grpc.LoadBalancer2.PickResult;
-import io.grpc.LoadBalancer2.Subchannel;
+import io.grpc.LoadBalancer2.SubchannelPicker;
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
 import io.grpc.Status;
@@ -176,6 +174,11 @@ class DelayedClientTransport implements ManagedClientTransport {
     return new FailingClientStream(Status.UNAVAILABLE.withDescription("transport shutdown"));
   }
 
+  @Override
+  public final ClientStream newStream(MethodDescriptor<?, ?> method, Metadata headers) {
+    return newStream(method, headers, CallOptions.DEFAULT, StatsTraceContext.NOOP);
+  }
+
   @GuardedBy("lock")
   private PendingStream createPendingStream(MethodDescriptor<?, ?> method, Metadata headers,
       CallOptions callOptions, StatsTraceContext statsTraceCtx) {
@@ -186,11 +189,6 @@ class DelayedClientTransport implements ManagedClientTransport {
       listener.transportInUse(true);
     }
     return pendingStream;
-  }
-
-  @Override
-  public final ClientStream newStream(MethodDescriptor<?, ?> method, Metadata headers) {
-    return newStream(method, headers, CallOptions.DEFAULT, StatsTraceContext.NOOP);
   }
 
   @Override

@@ -61,20 +61,13 @@ import io.grpc.MethodDescriptor;
 import io.grpc.NameResolver;
 import io.grpc.ResolvedServerInfoGroup;
 import io.grpc.Status;
-import io.grpc.TransportManager;
-import io.grpc.TransportManager.InterimTransport;
-import io.grpc.TransportManager.OobTransportProvider;
 import io.grpc.internal.ClientCallImpl.ClientTransportProvider;
 
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.util.ArrayList;
-import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
@@ -115,6 +108,8 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
   private final ClientTransportFactory transportFactory;
   private final Executor executor;
   private final boolean usingSharedExecutor;
+  private final LogId logId = LogId.allocate(getClass().getName());
+
   // TODO(zhangkun83): this is now running on app executor, which is not ideal and have the risk of
   // starving.  We should turn it into a thread-less executor.
   private final SerializingExecutor channelExecutor;
@@ -714,11 +709,11 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
           }
         });
     }
-  };
+  }
 
   @Override
-  public String getLogId() {
-    return GrpcUtil.getLogId(this);
+  public LogId getLogId() {
+    return logId;
   }
 
   private static class NameResolverListenerImpl implements NameResolver.Listener {
