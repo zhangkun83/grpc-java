@@ -32,7 +32,6 @@
 package io.grpc.internal;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
 
 import io.grpc.CallOptions;
 import io.grpc.Context;
@@ -60,14 +59,17 @@ import javax.annotation.concurrent.GuardedBy;
  * thus the delayed transport stops owning the stream.
  */
 final class DelayedClientTransport2 implements ManagedClientTransport {
-
   private final LogId lodId = LogId.allocate(getClass().getName());
 
   private final Object lock = new Object();
 
-  private final Executor streamCreationExecutor;
+  private final Executor defaultAppExecutor;
+  private final ChannelExecutor channelExecutor;
 
-  private Listener listener;
+  private Runnable reportTransportInUse;
+  private Runnable reportTransportNotInUse;
+  private Runnable reportTransportShutdown;
+  private Runnable reportTransportTerminated;
 
   @GuardedBy("lock")
   private Collection<PendingStream> pendingStreams = new LinkedHashSet<PendingStream>();
@@ -85,13 +87,47 @@ final class DelayedClientTransport2 implements ManagedClientTransport {
   @Nullable
   private volatile SubchannelPicker lastPicker;
 
-  DelayedClientTransport2(Executor streamCreationExecutor) {
-    this.streamCreationExecutor = streamCreationExecutor;
+  /**
+   * Creates a new delayed transport.
+   *
+   * @param defaultAppExecutor pending streams will create real streams and run bufferred operations
+   *        in an application executor, which will be this executor, unless there is on provided in
+   *        {@link CallOptions}.
+   * @param channelExecutor all listener callbacks of the delayed transport will be run from this
+   *        ChannelExecutor.
+   */
+  DelayedClientTransport2(Executor defaultAppExecutor, ChannelExecutor channelExecutor) {
+    this.defaultAppExecutor = defaultAppExecutor;
+    this.channelExecutor = channelExecutor;
   }
 
   @Override
-  public final Runnable start(Listener listener) {
-    this.listener = Preconditions.checkNotNull(listener, "listener");
+  public final Runnable start(final Listener listener) {
+    this.reportTransportInUse = new Runnable() {
+        @Override
+        public void run() {
+          listener.transportInUse(true);
+        }
+      };
+    this.reportTransportNotInUse = new Runnable() {
+        @Override
+        public void run() {
+          listener.transportInUse(false);
+        }
+      };
+    this.reportTransportShutdown = new Runnable() {
+        @Override
+        public void run() {
+          listener.transportShutdown(
+              Status.UNAVAILABLE.withDescription("Channel requested transport to shut down"));
+        }
+      };
+    this.reportTransportTerminated = new Runnable() {
+        @Override
+        public void run() {
+          listener.transportTerminated();
+        }
+      };
     return null;
   }
 
@@ -105,35 +141,40 @@ final class DelayedClientTransport2 implements ManagedClientTransport {
   @Override
   public final ClientStream newStream(MethodDescriptor<?, ?> method, Metadata headers,
       CallOptions callOptions, StatsTraceContext statsTraceCtx) {
-    SubchannelPicker picker = lastPicker;
-    if (picker == null) {
-      synchronized (lock) {
-        // Check again, since it may have changed while waiting for lock
-        picker = lastPicker;
-        if (picker == null && !shutdown) {
-          return createPendingStream(method, headers, callOptions, statsTraceCtx);
-        }
-      }
-    }
-    if (picker != null) {
-      while (true) {
-        PickResult pickResult = picker.pickSubchannel(callOptions.getAffinity(), headers);
-        ClientTransport transport = GrpcUtil.getTransportFromPickResult(
-            pickResult, callOptions.isWaitForReady());
-        if (transport != null) {
-          return transport.newStream(method, headers, callOptions, statsTraceCtx);
-        }
-        // This picker's conclusion is "buffer".  If there hasn't been a newer picker set (possible
-        // race with reprocess()), we will buffer it.  Otherwise, will try with the new picker.
+    try {
+      SubchannelPicker picker = lastPicker;
+      if (picker == null) {
         synchronized (lock) {
-          if (picker == lastPicker) {
+          // Check again, since it may have changed while waiting for lock
+          picker = lastPicker;
+          if (picker == null && !shutdown) {
             return createPendingStream(method, headers, callOptions, statsTraceCtx);
           }
-          picker = lastPicker;
         }
       }
+      if (picker != null) {
+        while (true) {
+          PickResult pickResult = picker.pickSubchannel(callOptions.getAffinity(), headers);
+          ClientTransport transport = GrpcUtil.getTransportFromPickResult(
+              pickResult, callOptions.isWaitForReady());
+          if (transport != null) {
+            return transport.newStream(method, headers, callOptions, statsTraceCtx);
+          }
+          // This picker's conclusion is "buffer".  If there hasn't been a newer picker set
+          // (possible race with reprocess()), we will buffer it.  Otherwise, will try with the new
+          // picker.
+          synchronized (lock) {
+            if (picker == lastPicker) {
+              return createPendingStream(method, headers, callOptions, statsTraceCtx);
+            }
+            picker = lastPicker;
+          }
+        }
+      }
+      return new FailingClientStream(Status.UNAVAILABLE.withDescription("transport shutdown"));
+    } finally {
+      channelExecutor.drain();
     }
-    return new FailingClientStream(Status.UNAVAILABLE.withDescription("transport shutdown"));
   }
 
   @Override
@@ -141,6 +182,8 @@ final class DelayedClientTransport2 implements ManagedClientTransport {
     return newStream(method, headers, CallOptions.DEFAULT, StatsTraceContext.NOOP);
   }
 
+  // Caller must call channelExecutor.drain() outside of lock because this method may schedule
+  // tasks on channelExecutor
   @GuardedBy("lock")
   private PendingStream createPendingStream(MethodDescriptor<?, ?> method, Metadata headers,
       CallOptions callOptions, StatsTraceContext statsTraceCtx) {
@@ -148,7 +191,7 @@ final class DelayedClientTransport2 implements ManagedClientTransport {
         statsTraceCtx);
     pendingStreams.add(pendingStream);
     if (pendingStreams.size() == 1) {
-      listener.transportInUse(true);
+      channelExecutor.executeLater(reportTransportInUse);
     }
     return pendingStream;
   }
@@ -170,13 +213,13 @@ final class DelayedClientTransport2 implements ManagedClientTransport {
         return;
       }
       shutdown = true;
-      listener.transportShutdown(
-          Status.UNAVAILABLE.withDescription("Channel requested transport to shut down"));
+      channelExecutor.executeLater(reportTransportShutdown);
       if (pendingStreams == null || pendingStreams.isEmpty()) {
         pendingStreams = null;
-        listener.transportTerminated();
+        channelExecutor.executeLater(reportTransportTerminated);
       }
     }
+    channelExecutor.drain();
   }
 
   /**
@@ -197,7 +240,7 @@ final class DelayedClientTransport2 implements ManagedClientTransport {
       for (PendingStream stream : savedPendingStreams) {
         stream.cancel(status);
       }
-      listener.transportTerminated();
+      channelExecutor.executeLater(reportTransportTerminated).drain();
     }
     // If savedPendingStreams == null, transportTerminated() has already been called in shutdown().
   }
@@ -244,7 +287,7 @@ final class DelayedClientTransport2 implements ManagedClientTransport {
       final ClientTransport transport = GrpcUtil.getTransportFromPickResult(
           pickResult, stream.callOptions.isWaitForReady());
       if (transport != null) {
-        Executor executor = streamCreationExecutor;
+        Executor executor = defaultAppExecutor;
         // createRealStream may be expensive. It will start real streams on the transport. If
         // there are pending requests, they will be serialized too, which may be expensive. Since
         // we are now on transport thread, we need to offload the work to an executor.
@@ -275,10 +318,10 @@ final class DelayedClientTransport2 implements ManagedClientTransport {
         // in-use state may be false. However, it shouldn't cause spurious switching to idleness
         // (which would shutdown the transports and LoadBalancer) because the gap should be shorter
         // than IDLE_MODE_DEFAULT_TIMEOUT_MILLIS (1 second).
-        listener.transportInUse(false);
+        channelExecutor.executeLater(reportTransportNotInUse);
         if (shutdown) {
           pendingStreams = null;
-          listener.transportTerminated();
+          channelExecutor.executeLater(reportTransportTerminated);
         } else {
           // Because delayed transport is long-lived, we take this opportunity to down-size the
           // hashmap.
@@ -286,6 +329,7 @@ final class DelayedClientTransport2 implements ManagedClientTransport {
         }
       }
     }
+    channelExecutor.drain();
   }
 
   // TODO(carl-mastrangelo): remove this once the Subchannel change is in.
@@ -328,14 +372,15 @@ final class DelayedClientTransport2 implements ManagedClientTransport {
         if (pendingStreams != null) {
           boolean justRemovedAnElement = pendingStreams.remove(this);
           if (pendingStreams.isEmpty() && justRemovedAnElement) {
-            listener.transportInUse(false);
+            channelExecutor.executeLater(reportTransportNotInUse);
             if (shutdown) {
               pendingStreams = null;
-              listener.transportTerminated();
+              channelExecutor.executeLater(reportTransportTerminated);
             }
           }
         }
       }
+      channelExecutor.drain();
     }
   }
 }

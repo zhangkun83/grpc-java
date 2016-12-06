@@ -110,8 +110,8 @@ public class DelayedClientTransport2Test {
 
   private final FakeClock fakeExecutor = new FakeClock();
 
-  private final DelayedClientTransport2 delayedTransport =
-      new DelayedClientTransport2(fakeExecutor.getScheduledExecutorService());
+  private final DelayedClientTransport2 delayedTransport = new DelayedClientTransport2(
+      fakeExecutor.getScheduledExecutorService(), new ChannelExecutor());
 
   @Before public void setUp() {
     MockitoAnnotations.initMocks(this);
