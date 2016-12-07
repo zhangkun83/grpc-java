@@ -110,9 +110,7 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
   private final boolean usingSharedExecutor;
   private final LogId logId = LogId.allocate(getClass().getName());
 
-  // TODO(zhangkun83): this is now running on app executor, which is not ideal and have the risk of
-  // starving.  We should turn it into a thread-less executor.
-  private final SerializingExecutor channelExecutor;
+  private final ChannelExecutor channelExecutor = new ChannelExecutor();
 
   private final DecompressorRegistry decompressorRegistry;
   private final CompressorRegistry compressorRegistry;
@@ -158,7 +156,7 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
   private final Set<InternalSubchannel> oobChannels = new HashSet<InternalSubchannel>(1, .75f);
 
   // reprocess() must be run from channelExecutor
-  private final DelayedClientTransport delayedTransport;
+  private final DelayedClientTransport2 delayedTransport;
 
   // Shutdown states.
   //
@@ -185,7 +183,7 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
   private volatile boolean terminated;
   private final CountDownLatch terminatedLatch = new CountDownLatch(1);
 
-  // Called within delayedTransport's lock
+  // Called from channelExecutor
   private final ManagedClientTransport.Listener delayedTransportListener =
       new ManagedClientTransport.Listener() {
         @Override
@@ -200,39 +198,29 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
 
         @Override
         public void transportInUse(final boolean inUse) {
-          channelExecutor.execute(new Runnable() {
-              @Override
-              public void run() {
-                inUseStateAggregator.updateObjectInUse(delayedTransport, inUse);
-              }
-            });
+          inUseStateAggregator.updateObjectInUse(delayedTransport, inUse);
         }
 
         @Override
         public void transportTerminated() {
-          channelExecutor.execute(new Runnable() {
-              @Override
-              public void run() {
-                checkState(shutdown.get(), "Channel must have been shut down");
-                terminating = true;
-                if (loadBalancer != null) {
-                  loadBalancer.shutdown();
-                  loadBalancer = null;
-                }
-                if (nameResolver != null) {
-                  nameResolver.shutdown();
-                  nameResolver = null;
-                }
+          checkState(shutdown.get(), "Channel must have been shut down");
+          terminating = true;
+          if (loadBalancer != null) {
+            loadBalancer.shutdown();
+            loadBalancer = null;
+          }
+          if (nameResolver != null) {
+            nameResolver.shutdown();
+            nameResolver = null;
+          }
 
-                // Only after we shut down LoadBalancer, will we shutdown the subchannels for
-                // shutdownNow.  If it had been done earlier, LoadBalancer may have created new
-                // subchannels after that.
-                List<InternalSubchannel> subchannelsCopy = null;
-                List<InternalSubchannel> oobChannelsCopy = null;
-                maybeShutdownNowSubchannels();
-                maybeTerminateChannel();
-              }
-            });
+          // Only after we shut down LoadBalancer, will we shutdown the subchannels for
+          // shutdownNow.  If it had been done earlier, LoadBalancer may have created new
+          // subchannels after that.
+          List<InternalSubchannel> subchannelsCopy = null;
+          List<InternalSubchannel> oobChannelsCopy = null;
+          maybeShutdownNowSubchannels();
+          maybeTerminateChannel();
         }
       };
 
@@ -350,7 +338,7 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
         new LogExceptionRunnable(new Runnable() {
             @Override
             public void run() {
-              channelExecutor.execute(idleModeTimer);
+              channelExecutor.executeLater(idleModeTimer).drain();
             }
           }),
         idleTimeoutMillis, TimeUnit.MILLISECONDS);
@@ -366,15 +354,12 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
         return delayedTransport;
       }
       if (pickerCopy == null) {
-        // TODO(zhangkun83): right now channelExecutor may throw if channel has shut down, which may
-        // shutdown the app executor which channelExecutor is running on.  It won't be a problem
-        // after we switch channelExecutor to thread-less.
-        channelExecutor.execute(new Runnable() {
+        channelExecutor.executeLater(new Runnable() {
             @Override
             public void run() {
               exitIdleMode();
             }
-          });
+          }).drain();
         return delayedTransport;
       }
       PickResult pickResult = pickerCopy.pickSubchannel(callOptions.getAffinity(), headers);
@@ -396,7 +381,6 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
       @Nullable Executor executor, @Nullable String userAgent,
       List<ClientInterceptor> interceptors, CensusContextFactory censusFactory) {
     this.target = checkNotNull(target, "target");
-    this.delayedTransport.start(delayedTransportListener);
     this.nameResolverFactory = checkNotNull(nameResolverFactory, "nameResolverFactory");
     this.nameResolverParams = checkNotNull(nameResolverParams, "nameResolverParams");
     this.nameResolver = getNameResolver(target, nameResolverFactory, nameResolverParams);
@@ -408,8 +392,8 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
       usingSharedExecutor = false;
       this.executor = executor;
     }
-    this.channelExecutor = new SerializingExecutor(this.executor);
-    this.delayedTransport = new DelayedClientTransport(this.channelExecutor);
+    this.delayedTransport = new DelayedClientTransport2(this.executor, this.channelExecutor);
+    this.delayedTransport.start(delayedTransportListener);
     this.backoffPolicyProvider = backoffPolicyProvider;
     this.transportFactory =
         new CallCredentialsApplyingTransportFactory(transportFactory, this.executor);
@@ -495,13 +479,13 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
       return this;
     }
     delayedTransport.shutdown();
-    channelExecutor.execute(new Runnable() {
+    channelExecutor.executeLater(new Runnable() {
         @Override
         public void run() {
           maybeTerminateChannel();
           cancelIdleTimer();
         }
-      });
+      }).drain();
     if (log.isLoggable(Level.FINE)) {
       log.log(Level.FINE, "[{0}] Shutting down", getLogId());
     }
@@ -520,7 +504,7 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
     }
     shutdown();
     delayedTransport.shutdownNow(SHUTDOWN_NOW_STATUS);
-    channelExecutor.execute(new Runnable() {
+    channelExecutor.executeLater(new Runnable() {
         @Override
         public void run() {
           if (shutdownNowed) {
@@ -529,7 +513,7 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
           shutdownNowed = true;
           maybeShutdownNowSubchannels();
         }
-      });
+      }).drain();
     return this;
   }
 
@@ -664,7 +648,7 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
         log.log(Level.FINE, "[{0}] {1} created for {2}",
             new Object[] {getLogId(), internalSubchannel.getLogId(), addressGroup});
       }
-      channelExecutor.execute(new Runnable() {
+      channelExecutor.executeLater(new Runnable() {
           @Override
           public void run() {
             if (terminating) {
@@ -675,7 +659,7 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
               subchannels.add(internalSubchannel);
             }
           }
-        });
+        }).drain();
       return subchannel;
     }
 
@@ -696,7 +680,7 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
 
     @Override
     public void runSerialized(Runnable task) {
-      channelExecutor.execute(task);
+      channelExecutor.executeLater(task).drain();
     }
 
     @Override
