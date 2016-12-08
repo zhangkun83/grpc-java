@@ -31,6 +31,9 @@
 
 package io.grpc.internal;
 
+import static io.grpc.ConnectivityState.CONNECTING;
+import static io.grpc.ConnectivityState.READY;
+import static io.grpc.ConnectivityState.TRANSIENT_FAILURE;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -45,6 +48,7 @@ import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.atMost;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -63,6 +67,7 @@ import io.grpc.ClientCall;
 import io.grpc.ClientInterceptor;
 import io.grpc.Compressor;
 import io.grpc.CompressorRegistry;
+import io.grpc.ConnectivityStateInfo;
 import io.grpc.Context;
 import io.grpc.DecompressorRegistry;
 import io.grpc.EquivalentAddressGroup;
@@ -91,6 +96,7 @@ import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
+import org.mockito.InOrder;
 import org.mockito.Matchers;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
@@ -144,6 +150,8 @@ public class ManagedChannelImpl2Test {
   private LoadBalancer2.Factory mockLoadBalancerFactory;
   @Mock
   private LoadBalancer2 mockLoadBalancer;
+  @Captor
+  private ArgumentCaptor<ConnectivityStateInfo> stateInfoCaptor;
   @Mock
   private SubchannelPicker mockPicker;
   @Mock
@@ -506,7 +514,6 @@ public class ManagedChannelImpl2Test {
     verifyNoMoreInteractions(mockLoadBalancer);
   }
 
-  // TODO(zhangkun83): review the tests from here.
   /**
    * Verify that if the first resolved address points to a server that cannot be connected, the call
    * will end up with the second address which works.
@@ -537,18 +544,35 @@ public class ManagedChannelImpl2Test {
     when(mockTransportFactory.newClientTransport(
             same(badAddress), any(String.class), any(String.class)))
         .thenReturn(badTransport);
+    InOrder inOrder = inOrder(mockLoadBalancer);
 
+    ResolvedServerInfoGroup serverInfoGroup = ResolvedServerInfoGroup.builder()
+        .add(badServer)
+        .add(goodServer)
+        .build();
     FakeNameResolverFactory nameResolverFactory =
-        new FakeNameResolverFactory(Arrays.asList(badServer, goodServer));
+        new FakeNameResolverFactory(serverInfoGroup.getResolvedServerInfoList());
     createChannel(nameResolverFactory, NO_INTERCEPTOR);
+
+    // Start the call
     ClientCall<String, Integer> call = channel.newCall(method, CallOptions.DEFAULT);
     Metadata headers = new Metadata();
-
-    // Start a call. The channel will starts with the first address (badAddress)
     call.start(mockCallListener, headers);
-    timer.runDueTasks();
     executor.runDueTasks();
 
+    // Simulate name resolution results
+    inOrder.verify(mockLoadBalancer).handleResolvedAddresses(
+        eq(Arrays.asList(serverInfoGroup)), eq(Attributes.EMPTY));
+    Subchannel subchannel = helper.createSubchannel(
+        serverInfoGroup.toEquivalentAddressGroup(), Attributes.EMPTY);
+    when(mockPicker.pickSubchannel(any(Attributes.class), any(Metadata.class)))
+        .thenReturn(PickResult.withSubchannel(subchannel));
+    subchannel.requestConnection();
+    inOrder.verify(mockLoadBalancer).handleSubchannelState(
+        same(subchannel), stateInfoCaptor.capture());
+    assertEquals(CONNECTING, stateInfoCaptor.getValue().getState());
+
+    // The channel will starts with the first address (badAddress)
     ArgumentCaptor<ManagedClientTransport.Listener> badTransportListenerCaptor =
         ArgumentCaptor.forClass(ManagedClientTransport.Listener.class);
     verify(badTransport).start(badTransportListenerCaptor.capture());
@@ -556,7 +580,9 @@ public class ManagedChannelImpl2Test {
         .newClientTransport(same(badAddress), any(String.class), any(String.class));
     verify(mockTransportFactory, times(0))
           .newClientTransport(same(goodAddress), any(String.class), any(String.class));
+    // Which failed to connect
     badTransportListenerCaptor.getValue().transportShutdown(Status.UNAVAILABLE);
+    inOrder.verifyNoMoreInteractions();
 
     // The channel then try the second address (goodAddress)
     ArgumentCaptor<ManagedClientTransport.Listener> goodTransportListenerCaptor =
@@ -565,6 +591,13 @@ public class ManagedChannelImpl2Test {
           .newClientTransport(same(goodAddress), any(String.class), any(String.class));
     verify(goodTransport).start(goodTransportListenerCaptor.capture());
     goodTransportListenerCaptor.getValue().transportReady();
+    inOrder.verify(mockLoadBalancer).handleSubchannelState(
+        same(subchannel), stateInfoCaptor.capture());
+    assertEquals(READY, stateInfoCaptor.getValue().getState());
+
+    // A typical LoadBalancer will call this once the subchannel becomes READY
+    helper.updatePicker(mockPicker);
+    // Delayed transport uses the app executor to create real streams.
     executor.runDueTasks();
 
     verify(goodTransport).newStream(same(method), same(headers), same(CallOptions.DEFAULT),
@@ -574,7 +607,8 @@ public class ManagedChannelImpl2Test {
   }
 
   /**
-   * Verify that if all resolved addresses failed to connect, the call will fail.
+   * Verify that if all resolved addresses failed to connect, a fail-fast call will fail, while a
+   * wait-for-ready call will still be buffered.
    */
   @Test
   public void allServersFailedToConnect() throws Exception {
@@ -596,18 +630,41 @@ public class ManagedChannelImpl2Test {
         .thenReturn(transport1);
     when(mockTransportFactory.newClientTransport(same(addr2), any(String.class), any(String.class)))
         .thenReturn(transport2);
+    InOrder inOrder = inOrder(mockLoadBalancer);
+
+    ResolvedServerInfoGroup serverInfoGroup = ResolvedServerInfoGroup.builder()
+        .add(server1)
+        .add(server2)
+        .build();
 
     FakeNameResolverFactory nameResolverFactory =
-        new FakeNameResolverFactory(Arrays.asList(server1, server2));
+        new FakeNameResolverFactory(serverInfoGroup.getResolvedServerInfoList());
     createChannel(nameResolverFactory, NO_INTERCEPTOR);
-    ClientCall<String, Integer> call = channel.newCall(method, CallOptions.DEFAULT);
-    Metadata headers = new Metadata();
 
-    // Start a call. The channel will starts with the first address, which will fail to connect.
+    // Start a wait-for-ready call
+    ClientCall<String, Integer> call =
+        channel.newCall(method, CallOptions.DEFAULT.withWaitForReady());
+    Metadata headers = new Metadata();
     call.start(mockCallListener, headers);
-    timer.runDueTasks();
+    // ... and a fail-fast call
+    ClientCall<String, Integer> call2 =
+        channel.newCall(method, CallOptions.DEFAULT.withoutWaitForReady());
+    call2.start(mockCallListener2, headers);
     executor.runDueTasks();
 
+    // Simulate name resolution results
+    inOrder.verify(mockLoadBalancer).handleResolvedAddresses(
+        eq(Arrays.asList(serverInfoGroup)), eq(Attributes.EMPTY));
+    Subchannel subchannel = helper.createSubchannel(
+        serverInfoGroup.toEquivalentAddressGroup(), Attributes.EMPTY);
+    when(mockPicker.pickSubchannel(any(Attributes.class), any(Metadata.class)))
+        .thenReturn(PickResult.withSubchannel(subchannel));
+    subchannel.requestConnection();
+    inOrder.verify(mockLoadBalancer).handleSubchannelState(
+        same(subchannel), stateInfoCaptor.capture());
+    assertEquals(CONNECTING, stateInfoCaptor.getValue().getState());
+
+    // Connecting to server1, which will fail
     verify(transport1).start(transportListenerCaptor.capture());
     verify(mockTransportFactory)
         .newClientTransport(same(addr1), any(String.class), any(String.class));
@@ -615,86 +672,35 @@ public class ManagedChannelImpl2Test {
         .newClientTransport(same(addr2), any(String.class), any(String.class));
     transportListenerCaptor.getValue().transportShutdown(Status.UNAVAILABLE);
 
-    // The channel then try the second address, which will fail to connect too.
+    // Connecting to server2, which will fail too
     verify(transport2).start(transportListenerCaptor.capture());
     verify(mockTransportFactory)
         .newClientTransport(same(addr2), any(String.class), any(String.class));
     verify(transport2).start(transportListenerCaptor.capture());
-    transportListenerCaptor.getValue().transportShutdown(Status.UNAVAILABLE);
+    Status server2Error = Status.UNAVAILABLE.withDescription("Server2 failed to connect");
+    transportListenerCaptor.getValue().transportShutdown(server2Error);
+
+    // ... which makes the subchannel enter TRANSIENT_FAILURE. The last error Status is propagated
+    // to LoadBalancer.
+    inOrder.verify(mockLoadBalancer).handleSubchannelState(
+        same(subchannel), stateInfoCaptor.capture());
+    assertEquals(TRANSIENT_FAILURE, stateInfoCaptor.getValue().getState());
+    assertSame(server2Error, stateInfoCaptor.getValue().getStatus());
+
+    // A typical LoadBalancer would create a picker with error
+    SubchannelPicker picker2 = mock(SubchannelPicker.class);
+    when(picker2.pickSubchannel(any(Attributes.class), any(Metadata.class)))
+        .thenReturn(PickResult.withError(server2Error));
+    helper.updatePicker(picker2);
     executor.runDueTasks();
 
-    // Call fails
-    verify(mockCallListener).onClose(statusCaptor.capture(), any(Metadata.class));
-    assertEquals(Status.Code.UNAVAILABLE, statusCaptor.getValue().getCode());
+    // ... which fails the fail-fast call
+    verify(mockCallListener2).onClose(same(server2Error), any(Metadata.class));
+    // ... while the wait-for-ready call stays
+    verifyNoMoreInteractions(mockCallListener);
     // No real stream was ever created
     verify(transport1, times(0)).newStream(any(MethodDescriptor.class), any(Metadata.class));
     verify(transport2, times(0)).newStream(any(MethodDescriptor.class), any(Metadata.class));
-  }
-
-  /**
-   * Verify that if the first resolved address points to a server that is at first connected, but
-   * disconnected later, all calls will stick to the first address.
-   */
-  @Test
-  public void firstResolvedServerConnectedThenDisconnected() throws Exception {
-    final SocketAddress addr1 = new SocketAddress() {
-        @Override public String toString() {
-          return "addr1";
-        }
-      };
-    final SocketAddress addr2 = new SocketAddress() {
-        @Override public String toString() {
-          return "addr2";
-        }
-      };
-    final ResolvedServerInfo server1 = new ResolvedServerInfo(addr1, Attributes.EMPTY);
-    final ResolvedServerInfo server2 = new ResolvedServerInfo(addr2, Attributes.EMPTY);
-    // Addr1 will have two transports throughout this test.
-    final ConnectionClientTransport transport1 = mock(ConnectionClientTransport.class);
-    final ConnectionClientTransport transport2 = mock(ConnectionClientTransport.class);
-    when(transport1.newStream(
-            any(MethodDescriptor.class), any(Metadata.class), any(CallOptions.class),
-            any(StatsTraceContext.class)))
-        .thenReturn(mock(ClientStream.class));
-    when(transport2.newStream(
-            any(MethodDescriptor.class), any(Metadata.class), any(CallOptions.class),
-            any(StatsTraceContext.class)))
-        .thenReturn(mock(ClientStream.class));
-    when(mockTransportFactory.newClientTransport(same(addr1), any(String.class), any(String.class)))
-        .thenReturn(transport1, transport2);
-
-    FakeNameResolverFactory nameResolverFactory =
-        new FakeNameResolverFactory(Arrays.asList(server1, server2));
-    createChannel(nameResolverFactory, NO_INTERCEPTOR);
-    ClientCall<String, Integer> call = channel.newCall(method, CallOptions.DEFAULT);
-    Metadata headers = new Metadata();
-
-    // First call will use the first address
-    call.start(mockCallListener, headers);
-    timer.runDueTasks();
-    executor.runDueTasks();
-
-    verify(mockTransportFactory)
-        .newClientTransport(same(addr1), any(String.class), any(String.class));
-    verify(transport1).start(transportListenerCaptor.capture());
-    transportListenerCaptor.getValue().transportReady();
-    executor.runDueTasks();
-
-    verify(transport1).newStream(same(method), same(headers), same(CallOptions.DEFAULT),
-        any(StatsTraceContext.class));
-    transportListenerCaptor.getValue().transportShutdown(Status.UNAVAILABLE);
-
-    // Second call still use the first address, since it was successfully connected.
-    ClientCall<String, Integer> call2 = channel.newCall(method, CallOptions.DEFAULT);
-    call2.start(mockCallListener, headers);
-    verify(transport2).start(transportListenerCaptor.capture());
-    verify(mockTransportFactory, times(2))
-        .newClientTransport(same(addr1), any(String.class), any(String.class));
-    transportListenerCaptor.getValue().transportReady();
-    executor.runDueTasks();
-
-    verify(transport2).newStream(same(method), same(headers), same(CallOptions.DEFAULT),
-        any(StatsTraceContext.class));
   }
 
   @Test
@@ -713,6 +719,8 @@ public class ManagedChannelImpl2Test {
    */
   @Test
   public void informationPropagatedToNewStreamAndCallCredentials() {
+    ResolvedServerInfoGroup serverInfoGroup = ResolvedServerInfoGroup.builder()
+        .add(server).build();
     createChannel(new FakeNameResolverFactory(true), NO_INTERCEPTOR);
     CallOptions callOptions = CallOptions.DEFAULT.withCallCredentials(creds);
     final Context.Key<String> testKey = Context.key("testing");
@@ -753,6 +761,10 @@ public class ManagedChannelImpl2Test {
     assertNull(testKey.get());
     call.start(mockCallListener, new Metadata());
 
+    // Simulate name resolution results
+    Subchannel subchannel = helper.createSubchannel(
+        serverInfoGroup.toEquivalentAddressGroup(), Attributes.EMPTY);
+    subchannel.requestConnection();
     ArgumentCaptor<ManagedClientTransport.Listener> transportListenerCaptor =
         ArgumentCaptor.forClass(ManagedClientTransport.Listener.class);
     verify(mockTransportFactory).newClientTransport(
@@ -764,6 +776,9 @@ public class ManagedChannelImpl2Test {
 
     // applyRequestMetadata() is called after the transport becomes ready.
     transportListenerCaptor.getValue().transportReady();
+    when(mockPicker.pickSubchannel(any(Attributes.class), any(Metadata.class)))
+        .thenReturn(PickResult.withSubchannel(subchannel));
+    helper.updatePicker(mockPicker);
     executor.runDueTasks();
     ArgumentCaptor<Attributes> attrsCaptor = ArgumentCaptor.forClass(Attributes.class);
     ArgumentCaptor<MetadataApplier> applierCaptor = ArgumentCaptor.forClass(MetadataApplier.class);
