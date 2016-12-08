@@ -241,7 +241,22 @@ public class ManagedChannelImpl2Test {
   }
 
   @Test
-  public void twoCallsAndGracefulShutdown() {
+  public void callsAndShutdown() {
+    subtestCallsAndShutdown(false, false);
+  }
+
+  @Test
+  public void callsAndShutdownNow() {
+    subtestCallsAndShutdown(true, false);
+  }
+
+  /** Make sure shutdownNow() after shutdown() has an effect. */
+  @Test
+  public void callsAndShutdownAndShutdownNow() {
+    subtestCallsAndShutdown(false, true);
+  }
+
+  private void subtestCallsAndShutdown(boolean shutdownNow, boolean shutdownNowAfterShutdown) {
     FakeNameResolverFactory nameResolverFactory = new FakeNameResolverFactory(true);
     createChannel(nameResolverFactory, NO_INTERCEPTOR);
     ClientStream mockStream = mock(ClientStream.class);
@@ -291,14 +306,19 @@ public class ManagedChannelImpl2Test {
     verify(mockStream2).start(any(ClientStreamListener.class));
 
     // Shutdown
-    channel.shutdown();
+    if (shutdownNow) {
+      channel.shutdownNow();
+    } else {
+      channel.shutdown();
+      if (shutdownNowAfterShutdown) {
+        channel.shutdownNow();
+        shutdownNow = true;
+      }
+    }
     assertTrue(channel.isShutdown());
     assertFalse(channel.isTerminated());
     assertEquals(1, nameResolverFactory.resolvers.size());
     verify(mockLoadBalancerFactory).newLoadBalancer(any(Helper.class));
-    // LoadBalancer and NameResolver are still running.
-    verify(mockLoadBalancer, never()).shutdown();
-    assertFalse(nameResolverFactory.resolvers.get(0).shutdown);
 
     // Further calls should fail without going to the transport
     ClientCall<String, Integer> call3 = channel.newCall(method, CallOptions.DEFAULT);
@@ -309,26 +329,45 @@ public class ManagedChannelImpl2Test {
     verify(mockCallListener3).onClose(statusCaptor.capture(), any(Metadata.class));
     assertSame(Status.Code.UNAVAILABLE, statusCaptor.getValue().getCode());
 
-    // call and call2 are still alive, and can still be assigned to a real transport
-    SubchannelPicker picker2 = mock(SubchannelPicker.class);
-    when(picker2.pickSubchannel(any(Attributes.class), same(headers))).thenReturn(
-        PickResult.withSubchannel(subchannel));
-    helper.updatePicker(picker2);
-    executor.runDueTasks();
-    verify(mockTransport).newStream(same(method), same(headers), same(CallOptions.DEFAULT),
-        any(StatsTraceContext.class));
-    verify(mockStream).start(any(ClientStreamListener.class));
+    if (shutdownNow) {
+      // LoadBalancer and NameResolver are shut down as soon as delayed transport is terminated.
+      verify(mockLoadBalancer).shutdown();
+      assertTrue(nameResolverFactory.resolvers.get(0).shutdown);
+      // call should have been aborted by delayed transport
+      executor.runDueTasks();
+      verify(mockCallListener).onClose(same(ManagedChannelImpl2.SHUTDOWN_NOW_STATUS),
+          any(Metadata.class));
+    } else {
+      // LoadBalancer and NameResolver are still running.
+      verify(mockLoadBalancer, never()).shutdown();
+      assertFalse(nameResolverFactory.resolvers.get(0).shutdown);
+      // call and call2 are still alive, and can still be assigned to a real transport
+      SubchannelPicker picker2 = mock(SubchannelPicker.class);
+      when(picker2.pickSubchannel(any(Attributes.class), same(headers))).thenReturn(
+          PickResult.withSubchannel(subchannel));
+      helper.updatePicker(picker2);
+      executor.runDueTasks();
+      verify(mockTransport).newStream(same(method), same(headers), same(CallOptions.DEFAULT),
+          any(StatsTraceContext.class));
+      verify(mockStream).start(any(ClientStreamListener.class));
+    }
 
     // After call is moved out of delayed transport, LoadBalancer, NameResolver and the transports
     // will be shutdown.
     verify(mockLoadBalancer).shutdown();
     assertTrue(nameResolverFactory.resolvers.get(0).shutdown);
 
+    if (shutdownNow) {
+      // Channel shutdownNow() all subchannels after shutting down LoadBalancer
+      verify(mockTransport).shutdownNow(ManagedChannelImpl2.SHUTDOWN_NOW_STATUS);
+    } else {
+      verify(mockTransport, never()).shutdownNow(any(Status.class));
+    }
     // LoadBalancer should shutdown the subchannel
     subchannel.shutdown();
     verify(mockTransport).shutdown();
 
-    // Kill the remaining real transport will terminate the channel
+    // Killing the remaining real transport will terminate the channel
     transportListener.transportShutdown(Status.UNAVAILABLE);
     assertFalse(channel.isTerminated());
     transportListener.transportTerminated();
@@ -339,92 +378,6 @@ public class ManagedChannelImpl2Test {
     verify(mockTransport, atLeast(0)).getLogId();
     verifyNoMoreInteractions(mockTransport);
   }
-
-  // TODO(zhangkun83): review the tests from here.
-  @Test
-  public void callAndShutdownNow() {
-    FakeNameResolverFactory nameResolverFactory = new FakeNameResolverFactory(true);
-    createChannel(nameResolverFactory, NO_INTERCEPTOR);
-    verifyNoMoreInteractions(mockTransportFactory);
-    ClientCall<String, Integer> call = channel.newCall(method, CallOptions.DEFAULT);
-    verifyNoMoreInteractions(mockTransportFactory);
-
-    // Create transport and call
-    ClientStream mockStream = mock(ClientStream.class);
-    Metadata headers = new Metadata();
-    when(mockTransportFactory.newClientTransport(
-            any(SocketAddress.class), any(String.class), any(String.class)))
-        .thenReturn(mockTransport);
-    when(mockTransport.newStream(same(method), same(headers), same(CallOptions.DEFAULT),
-            any(StatsTraceContext.class)))
-        .thenReturn(mockStream);
-    call.start(mockCallListener, headers);
-    timer.runDueTasks();
-    executor.runDueTasks();
-
-    verify(mockTransportFactory)
-        .newClientTransport(same(socketAddress), eq(authority), any(String.class));
-    verify(mockTransport).start(transportListenerCaptor.capture());
-    ManagedClientTransport.Listener transportListener = transportListenerCaptor.getValue();
-    transportListener.transportReady();
-    executor.runDueTasks();
-
-    verify(mockTransport).newStream(same(method), same(headers), same(CallOptions.DEFAULT),
-        any(StatsTraceContext.class));
-
-    verify(mockStream).start(streamListenerCaptor.capture());
-    verify(mockStream).setCompressor(isA(Compressor.class));
-    ClientStreamListener streamListener = streamListenerCaptor.getValue();
-
-    // ShutdownNow
-    channel.shutdownNow();
-    assertTrue(channel.isShutdown());
-    assertFalse(channel.isTerminated());
-    // ShutdownNow may or may not invoke shutdown. Ideally it wouldn't, but it doesn't matter much
-    // either way.
-    verify(mockTransport, atMost(1)).shutdown();
-    verify(mockTransport).shutdownNow(any(Status.class));
-    assertEquals(1, nameResolverFactory.resolvers.size());
-    assertTrue(nameResolverFactory.resolvers.get(0).shutdown);
-    verify(mockLoadBalancerFactory).newLoadBalancer(any(Helper.class));
-    verify(mockLoadBalancer, never()).shutdown();
-
-    // Further calls should fail without going to the transport
-    ClientCall<String, Integer> call3 = channel.newCall(method, CallOptions.DEFAULT);
-    call3.start(mockCallListener3, new Metadata());
-    executor.runDueTasks();
-
-    verify(mockCallListener3).onClose(statusCaptor.capture(), any(Metadata.class));
-    assertSame(Status.Code.UNAVAILABLE, statusCaptor.getValue().getCode());
-
-    // Finish shutdown
-    transportListener.transportShutdown(Status.CANCELLED);
-    assertFalse(channel.isTerminated());
-    Metadata trailers = new Metadata();
-    streamListener.closed(Status.CANCELLED, trailers);
-    executor.runDueTasks();
-
-    verify(mockCallListener).onClose(Status.CANCELLED, trailers);
-    assertFalse(channel.isTerminated());
-
-    transportListener.transportTerminated();
-    assertTrue(channel.isTerminated());
-
-    verify(mockTransportFactory).close();
-    verifyNoMoreInteractions(mockTransportFactory);
-    verify(mockTransport, atLeast(0)).getLogId();
-    verifyNoMoreInteractions(mockTransport);
-    verifyNoMoreInteractions(mockStream);
-  }
-
-  /** Make sure shutdownNow() after shutdown() has an effect. */
-  @Test
-  public void callAndShutdownAndShutdownNow() {
-    createChannel(new FakeNameResolverFactory(true), NO_INTERCEPTOR);
-    
-    // TODO(zhangkun83): re-write this
-  }
-
 
   @Test
   public void interceptor() throws Exception {
@@ -441,59 +394,6 @@ public class ManagedChannelImpl2Test {
     createChannel(new FakeNameResolverFactory(true), Arrays.asList(interceptor));
     assertNotNull(channel.newCall(method, CallOptions.DEFAULT));
     assertEquals(1, atomic.get());
-  }
-
-  @Test
-  public void testNoDeadlockOnShutdown() {
-    createChannel(new FakeNameResolverFactory(true), NO_INTERCEPTOR);
-    // Force creation of transport
-    ClientCall<String, Integer> call = channel.newCall(method, CallOptions.DEFAULT);
-    Metadata headers = new Metadata();
-    ClientStream mockStream = mock(ClientStream.class);
-    when(mockTransport.newStream(same(method), same(headers))).thenReturn(mockStream);
-    call.start(mockCallListener, headers);
-    timer.runDueTasks();
-    executor.runDueTasks();
-    call.cancel("Cancel for test", null);
-    executor.runDueTasks();
-
-    verify(mockTransport).start(transportListenerCaptor.capture());
-    final ManagedClientTransport.Listener transportListener = transportListenerCaptor.getValue();
-    final Object lock = new Object();
-    final CyclicBarrier barrier = new CyclicBarrier(2);
-    new Thread() {
-      @Override
-      public void run() {
-        synchronized (lock) {
-          try {
-            barrier.await();
-          } catch (Exception ex) {
-            throw new AssertionError(ex);
-          }
-          // To deadlock, a lock would be needed for this call to proceed.
-          transportListener.transportShutdown(Status.CANCELLED);
-        }
-      }
-    }.start();
-    doAnswer(new Answer<Void>() {
-      @Override
-      public Void answer(InvocationOnMock invocation) {
-        // To deadlock, a lock would need to be held while this method is in progress.
-        try {
-          barrier.await();
-        } catch (Exception ex) {
-          throw new AssertionError(ex);
-        }
-        // If deadlock is possible with this setup, this sychronization completes the loop because
-        // the transportShutdown needs a lock that Channel is holding while calling this method.
-        synchronized (lock) {
-        }
-        return null;
-      }
-    }).when(mockTransport).shutdown();
-    channel.shutdown();
-
-    transportListener.transportTerminated();
   }
 
   @Test
@@ -557,22 +457,13 @@ public class ManagedChannelImpl2Test {
   public void nameResolverReturnsEmptySubLists() {
     String errorDescription = "NameResolver returned an empty list";
 
-    // Name resolution is started as soon as channel is created
+    // Pass a FakeNameResolverFactory with an empty list
     createChannel(new FakeNameResolverFactory(), NO_INTERCEPTOR);
-    ClientCall<String, Integer> call = channel.newCall(method, CallOptions.DEFAULT);
-    call.start(mockCallListener, new Metadata());
-    timer.runDueTasks();
-    executor.runDueTasks();
 
-    // The call failed with the name resolution error
-    verify(mockCallListener).onClose(statusCaptor.capture(), any(Metadata.class));
-    Status status = statusCaptor.getValue();
-    assertSame(Status.Code.UNAVAILABLE, status.getCode());
-    assertTrue(status.getDescription(), status.getDescription().contains(errorDescription));
-    // LoadBalancer received the same error
+    // LoadBalancer received the error
     verify(mockLoadBalancerFactory).newLoadBalancer(any(Helper.class));
     verify(mockLoadBalancer).handleNameResolutionError(statusCaptor.capture());
-    status = statusCaptor.getValue();
+    Status status = statusCaptor.getValue();
     assertSame(Status.Code.UNAVAILABLE, status.getCode());
     assertEquals(errorDescription, status.getDescription());
   }
@@ -583,10 +474,6 @@ public class ManagedChannelImpl2Test {
     // Delay the success of name resolution until allResolved() is called
     FakeNameResolverFactory nameResolverFactory = new FakeNameResolverFactory(false);
     createChannel(nameResolverFactory, NO_INTERCEPTOR);
-    ClientCall<String, Integer> call = channel.newCall(method, CallOptions.DEFAULT);
-    call.start(mockCallListener, new Metadata());
-    timer.runDueTasks();
-    executor.runDueTasks();
 
     verify(mockLoadBalancerFactory).newLoadBalancer(any(Helper.class));
     doThrow(ex).when(mockLoadBalancer).handleResolvedAddresses(
@@ -594,16 +481,10 @@ public class ManagedChannelImpl2Test {
 
     // NameResolver returns addresses.
     nameResolverFactory.allResolved();
-    executor.runDueTasks();
 
-    // The call failed with the error thrown from handleResolvedAddresses()
-    verify(mockCallListener).onClose(statusCaptor.capture(), any(Metadata.class));
-    Status status = statusCaptor.getValue();
-    assertSame(Status.Code.INTERNAL, status.getCode());
-    assertSame(ex, status.getCause());
-    // The LoadBalancer received the same error
+    // The LoadBalancer will receive the error that it has thrown.
     verify(mockLoadBalancer).handleNameResolutionError(statusCaptor.capture());
-    status = statusCaptor.getValue();
+    Status status = statusCaptor.getValue();
     assertSame(Status.Code.INTERNAL, status.getCode());
     assertSame(ex, status.getCause());
   }
@@ -613,24 +494,19 @@ public class ManagedChannelImpl2Test {
     // Delay the success of name resolution until allResolved() is called.
     FakeNameResolverFactory nameResolverFactory = new FakeNameResolverFactory(false);
     createChannel(nameResolverFactory, NO_INTERCEPTOR);
-    ClientCall<String, Integer> call = channel.newCall(method, CallOptions.DEFAULT);
-    Metadata headers = new Metadata();
 
-    call.start(mockCallListener, headers);
-    timer.runDueTasks();
-    executor.runDueTasks();
     channel.shutdown();
 
     assertTrue(channel.isShutdown());
+    assertTrue(channel.isTerminated());
+    verify(mockLoadBalancer).shutdown();
     // Name resolved after the channel is shut down, which is possible if the name resolution takes
-    // time and is not cancellable. The resolved address will still be passed to the LoadBalancer.
+    // time and is not cancellable. The resolved address will be dropped.
     nameResolverFactory.allResolved();
-    executor.runDueTasks();
-
-    verify(mockTransportFactory, never())
-        .newClientTransport(any(SocketAddress.class), any(String.class), any(String.class));
+    verifyNoMoreInteractions(mockLoadBalancer);
   }
 
+  // TODO(zhangkun83): review the tests from here.
   /**
    * Verify that if the first resolved address points to a server that cannot be connected, the call
    * will end up with the second address which works.

@@ -98,7 +98,8 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
   private static final ClientTransport SHUTDOWN_TRANSPORT =
       new FailingClientTransport(Status.UNAVAILABLE.withDescription("Channel is shutdown"));
 
-  private static final Status SHUTDOWN_NOW_STATUS =
+  @VisibleForTesting
+  static final Status SHUTDOWN_NOW_STATUS =
       Status.UNAVAILABLE.withDescription("Channel shutdownNow invoked");
 
   private final String target;
@@ -217,8 +218,6 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
           // Only after we shut down LoadBalancer, will we shutdown the subchannels for
           // shutdownNow.  If it had been done earlier, LoadBalancer may have created new
           // subchannels after that.
-          List<InternalSubchannel> subchannelsCopy = null;
-          List<InternalSubchannel> oobChannelsCopy = null;
           maybeShutdownNowSubchannels();
           maybeTerminateChannel();
         }
@@ -700,7 +699,7 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
     return logId;
   }
 
-  private static class NameResolverListenerImpl implements NameResolver.Listener {
+  private class NameResolverListenerImpl implements NameResolver.Listener {
     final LoadBalancer2 balancer;
 
     NameResolverListenerImpl(LoadBalancer2 balancer) {
@@ -708,26 +707,42 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
     }
 
     @Override
-    public void onUpdate(List<ResolvedServerInfoGroup> servers, Attributes config) {
+    public void onUpdate(final List<ResolvedServerInfoGroup> servers, final Attributes config) {
       if (servers.isEmpty()) {
         onError(Status.UNAVAILABLE.withDescription("NameResolver returned an empty list"));
         return;
       }
 
-      try {
-        balancer.handleResolvedAddresses(servers, config);
-      } catch (Throwable e) {
-        // It must be a bug! Push the exception back to LoadBalancer in the hope that it may be
-        // propagated to the application.
-        balancer.handleNameResolutionError(Status.INTERNAL.withCause(e)
-            .withDescription("Thrown from handleResolvedAddresses(): " + e));
-      }
+      channelExecutor.executeLater(new Runnable() {
+          @Override
+          public void run() {
+            if (terminated) {
+              return;
+            }
+            try {
+              balancer.handleResolvedAddresses(servers, config);
+            } catch (Throwable e) {
+              // It must be a bug! Push the exception back to LoadBalancer in the hope that it may be
+              // propagated to the application.
+              balancer.handleNameResolutionError(Status.INTERNAL.withCause(e)
+                  .withDescription("Thrown from handleResolvedAddresses(): " + e));
+            }
+          }
+        }).drain();
     }
 
     @Override
-    public void onError(Status error) {
+    public void onError(final Status error) {
       checkArgument(!error.isOk(), "the error status must not be OK");
-      balancer.handleNameResolutionError(error);
+      channelExecutor.executeLater(new Runnable() {
+          @Override
+          public void run() {
+            if (terminated) {
+              return;
+            }
+            balancer.handleNameResolutionError(error);
+          }
+        }).drain();
     }
   }
 
