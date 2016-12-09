@@ -96,6 +96,9 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
 
   static final long IDLE_TIMEOUT_MILLIS_DISABLE = -1;
 
+  @VisibleForTesting
+  static final long SUBCHANNEL_SHUTDOWN_DELAY_SECONDS = 5;
+
   private static final ClientTransport SHUTDOWN_TRANSPORT =
       new FailingClientTransport(Status.UNAVAILABLE.withDescription("Channel is shutdown"));
 
@@ -797,7 +800,7 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
                   public void run() {
                     subchannel.shutdown();
                   }
-                }), 5, TimeUnit.SECONDS);
+                }), SUBCHANNEL_SHUTDOWN_DELAY_SECONDS, TimeUnit.SECONDS);
       } else {
         // Two possible ways to get here:
         //

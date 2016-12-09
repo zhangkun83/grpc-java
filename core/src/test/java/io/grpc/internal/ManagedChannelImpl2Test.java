@@ -34,6 +34,7 @@ package io.grpc.internal;
 import static io.grpc.ConnectivityState.CONNECTING;
 import static io.grpc.ConnectivityState.READY;
 import static io.grpc.ConnectivityState.TRANSIENT_FAILURE;
+import static junit.framework.TestCase.assertNotSame;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -85,6 +86,7 @@ import io.grpc.ResolvedServerInfoGroup;
 import io.grpc.SecurityLevel;
 import io.grpc.Status;
 import io.grpc.StringMarshaller;
+import io.grpc.internal.TestUtils.MockClientTransportInfo;
 import io.grpc.internal.testing.CensusTestUtils.FakeCensusContextFactory;
 
 import org.junit.After;
@@ -110,6 +112,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledExecutorService;
@@ -123,9 +126,11 @@ public class ManagedChannelImpl2Test {
       Collections.<ClientInterceptor>emptyList();
   private static final Attributes NAME_RESOLVER_PARAMS =
       Attributes.newBuilder().set(NameResolver.Factory.PARAMS_DEFAULT_PORT, 447).build();
-  private final MethodDescriptor<String, Integer> method = MethodDescriptor.create(
+  private static final MethodDescriptor<String, Integer> method = MethodDescriptor.create(
       MethodDescriptor.MethodType.UNKNOWN, "/service/method",
       new StringMarshaller(), new IntegerMarshaller());
+  private static final Attributes.Key<String> SUBCHANNEL_ATTR_KEY =
+      Attributes.Key.of("subchannel-attr-key");
   private final String serviceName = "fake.example.com";
   private final String authority = serviceName;
   private final String userAgent = "userAgent";
@@ -155,8 +160,6 @@ public class ManagedChannelImpl2Test {
   @Mock
   private SubchannelPicker mockPicker;
   @Mock
-  private ConnectionClientTransport mockTransport;
-  @Mock
   private ClientTransportFactory mockTransportFactory;
   @Mock
   private ClientCall.Listener<Integer> mockCallListener;
@@ -168,9 +171,8 @@ public class ManagedChannelImpl2Test {
   private SharedResourceHolder.Resource<ScheduledExecutorService> timerService;
   @Mock
   private CallCredentials creds;
+  private BlockingQueue<MockClientTransportInfo> transports;
 
-  private ArgumentCaptor<ManagedClientTransport.Listener> transportListenerCaptor =
-      ArgumentCaptor.forClass(ManagedClientTransport.Listener.class);
   private ArgumentCaptor<ClientStreamListener> streamListenerCaptor =
       ArgumentCaptor.forClass(ClientStreamListener.class);
 
@@ -196,9 +198,7 @@ public class ManagedChannelImpl2Test {
     MockitoAnnotations.initMocks(this);
     expectedUri = new URI(target);
     when(mockLoadBalancerFactory.newLoadBalancer(any(Helper.class))).thenReturn(mockLoadBalancer);
-    when(mockTransportFactory.newClientTransport(
-            any(SocketAddress.class), any(String.class), any(String.class)))
-        .thenReturn(mockTransport);
+    transports = TestUtils.captureTransports(mockTransportFactory);
     when(timerService.create()).thenReturn(timer.getScheduledExecutorService());
   }
 
@@ -271,12 +271,6 @@ public class ManagedChannelImpl2Test {
     ClientStream mockStream2 = mock(ClientStream.class);
     Metadata headers = new Metadata();
     Metadata headers2 = new Metadata();
-    when(mockTransport.newStream(same(method), same(headers), same(CallOptions.DEFAULT),
-            any(StatsTraceContext.class)))
-        .thenReturn(mockStream);
-    when(mockTransport.newStream(same(method), same(headers2), same(CallOptions.DEFAULT),
-            any(StatsTraceContext.class)))
-        .thenReturn(mockStream2);
 
     // Configure the picker so that first RPC goes to delayed transport, and second RPC goes to
     // real transport.
@@ -284,8 +278,16 @@ public class ManagedChannelImpl2Test {
     subchannel.requestConnection();
     verify(mockTransportFactory).newClientTransport(
         any(SocketAddress.class), any(String.class), any(String.class));
-    verify(mockTransport).start(transportListenerCaptor.capture());
-    ManagedClientTransport.Listener transportListener = transportListenerCaptor.getValue();
+    MockClientTransportInfo transportInfo = transports.poll();
+    ConnectionClientTransport mockTransport = transportInfo.transport;
+    verify(mockTransport).start(any(ManagedClientTransport.Listener.class));
+    ManagedClientTransport.Listener transportListener = transportInfo.listener;
+    when(mockTransport.newStream(same(method), same(headers), same(CallOptions.DEFAULT),
+            any(StatsTraceContext.class)))
+        .thenReturn(mockStream);
+    when(mockTransport.newStream(same(method), same(headers2), same(CallOptions.DEFAULT),
+            any(StatsTraceContext.class)))
+        .thenReturn(mockStream2);
     transportListener.transportReady();
     when(mockPicker.pickSubchannel(any(Attributes.class), same(headers))).thenReturn(
         PickResult.withNoResult());
@@ -408,9 +410,6 @@ public class ManagedChannelImpl2Test {
   public void callOptionsExecutor() {
     Metadata headers = new Metadata();
     ClientStream mockStream = mock(ClientStream.class);
-    when(mockTransport.newStream(same(method), same(headers), any(CallOptions.class),
-            any(StatsTraceContext.class)))
-        .thenReturn(mockStream);
     FakeClock callExecutor = new FakeClock();
     createChannel(new FakeNameResolverFactory(true), NO_INTERCEPTOR);
 
@@ -420,20 +419,23 @@ public class ManagedChannelImpl2Test {
     ClientCall<String, Integer> call = channel.newCall(method, options);
     call.start(mockCallListener, headers);
 
-    // The stream is buffered in channel's delayed transport until a picker is provided
-    verify(mockTransport, never()).newStream(same(method), same(headers), same(options),
-        any(StatsTraceContext.class));
-    assertEquals(0, callExecutor.numPendingTasks());
-
     // Make the transport available
     Subchannel subchannel = helper.createSubchannel(addressGroup, Attributes.EMPTY);
+    verify(mockTransportFactory, never()).newClientTransport(
+        any(SocketAddress.class), any(String.class), any(String.class));
     subchannel.requestConnection();
     verify(mockTransportFactory).newClientTransport(
         any(SocketAddress.class), any(String.class), any(String.class));
-    verify(mockTransport).start(transportListenerCaptor.capture());
-    transportListenerCaptor.getValue().transportReady();
+    MockClientTransportInfo transportInfo = transports.poll();
+    ConnectionClientTransport mockTransport = transportInfo.transport;
+    ManagedClientTransport.Listener transportListener = transportInfo.listener;
+    when(mockTransport.newStream(same(method), same(headers), any(CallOptions.class),
+            any(StatsTraceContext.class)))
+        .thenReturn(mockStream);
+    transportListener.transportReady();
     when(mockPicker.pickSubchannel(any(Attributes.class), any(Metadata.class)))
         .thenReturn(PickResult.withSubchannel(subchannel));
+    assertEquals(0, callExecutor.numPendingTasks());
     helper.updatePicker(mockPicker);
 
     // Real streams are started in the call executor if they were previously buffered.
@@ -532,18 +534,6 @@ public class ManagedChannelImpl2Test {
       };
     final ResolvedServerInfo goodServer = new ResolvedServerInfo(goodAddress, Attributes.EMPTY);
     final ResolvedServerInfo badServer = new ResolvedServerInfo(badAddress, Attributes.EMPTY);
-    final ConnectionClientTransport goodTransport = mock(ConnectionClientTransport.class);
-    final ConnectionClientTransport badTransport = mock(ConnectionClientTransport.class);
-    when(goodTransport.newStream(
-            any(MethodDescriptor.class), any(Metadata.class), any(CallOptions.class),
-            any(StatsTraceContext.class)))
-        .thenReturn(mock(ClientStream.class));
-    when(mockTransportFactory.newClientTransport(
-            same(goodAddress), any(String.class), any(String.class)))
-        .thenReturn(goodTransport);
-    when(mockTransportFactory.newClientTransport(
-            same(badAddress), any(String.class), any(String.class)))
-        .thenReturn(badTransport);
     InOrder inOrder = inOrder(mockLoadBalancer);
 
     ResolvedServerInfoGroup serverInfoGroup = ResolvedServerInfoGroup.builder()
@@ -573,24 +563,26 @@ public class ManagedChannelImpl2Test {
     assertEquals(CONNECTING, stateInfoCaptor.getValue().getState());
 
     // The channel will starts with the first address (badAddress)
-    ArgumentCaptor<ManagedClientTransport.Listener> badTransportListenerCaptor =
-        ArgumentCaptor.forClass(ManagedClientTransport.Listener.class);
-    verify(badTransport).start(badTransportListenerCaptor.capture());
     verify(mockTransportFactory)
         .newClientTransport(same(badAddress), any(String.class), any(String.class));
     verify(mockTransportFactory, times(0))
           .newClientTransport(same(goodAddress), any(String.class), any(String.class));
+
+    MockClientTransportInfo badTransportInfo = transports.poll();
     // Which failed to connect
-    badTransportListenerCaptor.getValue().transportShutdown(Status.UNAVAILABLE);
+    badTransportInfo.listener.transportShutdown(Status.UNAVAILABLE);
     inOrder.verifyNoMoreInteractions();
 
     // The channel then try the second address (goodAddress)
-    ArgumentCaptor<ManagedClientTransport.Listener> goodTransportListenerCaptor =
-        ArgumentCaptor.forClass(ManagedClientTransport.Listener.class);
     verify(mockTransportFactory)
           .newClientTransport(same(goodAddress), any(String.class), any(String.class));
-    verify(goodTransport).start(goodTransportListenerCaptor.capture());
-    goodTransportListenerCaptor.getValue().transportReady();
+    MockClientTransportInfo goodTransportInfo = transports.poll();
+    when(goodTransportInfo.transport.newStream(
+            any(MethodDescriptor.class), any(Metadata.class), any(CallOptions.class),
+            any(StatsTraceContext.class)))
+        .thenReturn(mock(ClientStream.class));
+    
+    goodTransportInfo.listener.transportReady();
     inOrder.verify(mockLoadBalancer).handleSubchannelState(
         same(subchannel), stateInfoCaptor.capture());
     assertEquals(READY, stateInfoCaptor.getValue().getState());
@@ -600,10 +592,11 @@ public class ManagedChannelImpl2Test {
     // Delayed transport uses the app executor to create real streams.
     executor.runDueTasks();
 
-    verify(goodTransport).newStream(same(method), same(headers), same(CallOptions.DEFAULT),
-        any(StatsTraceContext.class));
+    verify(goodTransportInfo.transport).newStream(same(method), same(headers),
+        same(CallOptions.DEFAULT), any(StatsTraceContext.class));
     // The bad transport was never used.
-    verify(badTransport, times(0)).newStream(any(MethodDescriptor.class), any(Metadata.class));
+    verify(badTransportInfo.transport, times(0)).newStream(any(MethodDescriptor.class),
+        any(Metadata.class), any(CallOptions.class), any(StatsTraceContext.class));
   }
 
   /**
@@ -624,12 +617,6 @@ public class ManagedChannelImpl2Test {
       };
     final ResolvedServerInfo server1 = new ResolvedServerInfo(addr1, Attributes.EMPTY);
     final ResolvedServerInfo server2 = new ResolvedServerInfo(addr2, Attributes.EMPTY);
-    final ConnectionClientTransport transport1 = mock(ConnectionClientTransport.class);
-    final ConnectionClientTransport transport2 = mock(ConnectionClientTransport.class);
-    when(mockTransportFactory.newClientTransport(same(addr1), any(String.class), any(String.class)))
-        .thenReturn(transport1);
-    when(mockTransportFactory.newClientTransport(same(addr2), any(String.class), any(String.class)))
-        .thenReturn(transport2);
     InOrder inOrder = inOrder(mockLoadBalancer);
 
     ResolvedServerInfoGroup serverInfoGroup = ResolvedServerInfoGroup.builder()
@@ -665,20 +652,19 @@ public class ManagedChannelImpl2Test {
     assertEquals(CONNECTING, stateInfoCaptor.getValue().getState());
 
     // Connecting to server1, which will fail
-    verify(transport1).start(transportListenerCaptor.capture());
     verify(mockTransportFactory)
         .newClientTransport(same(addr1), any(String.class), any(String.class));
     verify(mockTransportFactory, times(0))
         .newClientTransport(same(addr2), any(String.class), any(String.class));
-    transportListenerCaptor.getValue().transportShutdown(Status.UNAVAILABLE);
+    MockClientTransportInfo transportInfo1 = transports.poll();
+    transportInfo1.listener.transportShutdown(Status.UNAVAILABLE);
 
     // Connecting to server2, which will fail too
-    verify(transport2).start(transportListenerCaptor.capture());
     verify(mockTransportFactory)
         .newClientTransport(same(addr2), any(String.class), any(String.class));
-    verify(transport2).start(transportListenerCaptor.capture());
+    MockClientTransportInfo transportInfo2 = transports.poll();
     Status server2Error = Status.UNAVAILABLE.withDescription("Server2 failed to connect");
-    transportListenerCaptor.getValue().transportShutdown(server2Error);
+    transportInfo2.listener.transportShutdown(server2Error);
 
     // ... which makes the subchannel enter TRANSIENT_FAILURE. The last error Status is propagated
     // to LoadBalancer.
@@ -699,8 +685,65 @@ public class ManagedChannelImpl2Test {
     // ... while the wait-for-ready call stays
     verifyNoMoreInteractions(mockCallListener);
     // No real stream was ever created
-    verify(transport1, times(0)).newStream(any(MethodDescriptor.class), any(Metadata.class));
-    verify(transport2, times(0)).newStream(any(MethodDescriptor.class), any(Metadata.class));
+    verify(transportInfo1.transport, times(0))
+        .newStream(any(MethodDescriptor.class), any(Metadata.class));
+    verify(transportInfo2.transport, times(0))
+        .newStream(any(MethodDescriptor.class), any(Metadata.class));
+  }
+
+  @Test
+  public void subchannels() {
+    createChannel(new FakeNameResolverFactory(true), NO_INTERCEPTOR);
+
+    // createSubchannel() always return a new Subchannel
+    Attributes attrs1 = Attributes.newBuilder().set(SUBCHANNEL_ATTR_KEY, "attr1").build();
+    Attributes attrs2 = Attributes.newBuilder().set(SUBCHANNEL_ATTR_KEY, "attr2").build();
+    Subchannel sub1 = helper.createSubchannel(addressGroup, attrs1);
+    Subchannel sub2 = helper.createSubchannel(addressGroup, attrs2);
+    assertNotSame(sub1, sub2);
+    assertNotSame(attrs1, attrs2);
+    assertSame(attrs1, sub1.getAttributes());
+    assertSame(attrs2, sub2.getAttributes());
+    assertSame(addressGroup, sub1.getAddresses());
+    assertSame(addressGroup, sub2.getAddresses());
+
+    // requestConnection()
+    verify(mockTransportFactory, never()).newClientTransport(
+        any(SocketAddress.class), any(String.class), any(String.class));
+    sub1.requestConnection();
+    verify(mockTransportFactory).newClientTransport(socketAddress, authority, userAgent);
+    MockClientTransportInfo transportInfo1 = transports.poll();
+    assertNotNull(transportInfo1);
+
+    sub2.requestConnection();
+    verify(mockTransportFactory, times(2)).newClientTransport(socketAddress, authority, userAgent);
+    MockClientTransportInfo transportInfo2 = transports.poll();
+    assertNotNull(transportInfo2);
+
+    sub1.requestConnection();
+    sub2.requestConnection();
+    verify(mockTransportFactory, times(2)).newClientTransport(socketAddress, authority, userAgent);
+
+    // shutdown() has a delay
+    sub1.shutdown();
+    timer.forwardTime(ManagedChannelImpl2.SUBCHANNEL_SHUTDOWN_DELAY_SECONDS - 1, TimeUnit.SECONDS);
+    sub1.shutdown();
+    verify(transportInfo1.transport, never()).shutdown();
+    timer.forwardTime(1, TimeUnit.SECONDS);
+    verify(transportInfo1.transport).shutdown();
+
+    // ... but not after Channel is terminating
+    verify(mockLoadBalancer, never()).shutdown();
+    channel.shutdown();
+    verify(mockLoadBalancer).shutdown();
+    verify(transportInfo2.transport, never()).shutdown();
+
+    sub2.shutdown();
+    verify(transportInfo2.transport).shutdown();
+  }
+
+  @Test
+  public void oobchannels() {
   }
 
   @Test
@@ -737,20 +780,6 @@ public class ManagedChannelImpl2Test {
           any(MethodDescriptor.class), any(Attributes.class), any(Executor.class),
           any(MetadataApplier.class));
 
-    final ConnectionClientTransport transport = mock(ConnectionClientTransport.class);
-    when(transport.getAttrs()).thenReturn(Attributes.EMPTY);
-    when(mockTransportFactory.newClientTransport(any(SocketAddress.class), any(String.class),
-            any(String.class))).thenReturn(transport);
-    doAnswer(new Answer<ClientStream>() {
-        @Override
-        public ClientStream answer(InvocationOnMock in) throws Throwable {
-          newStreamContexts.add(Context.current());
-          return mock(ClientStream.class);
-        }
-      }).when(transport).newStream(
-          any(MethodDescriptor.class), any(Metadata.class), any(CallOptions.class),
-          any(StatsTraceContext.class));
-
     // First call will be on delayed transport.  Only newCall() is run within the expected context,
     // so that we can verify that the context is explicitly attached before calling newStream() and
     // applyRequestMetadata(), which happens after we detach the context from the thread.
@@ -765,17 +794,27 @@ public class ManagedChannelImpl2Test {
     Subchannel subchannel = helper.createSubchannel(
         serverInfoGroup.toEquivalentAddressGroup(), Attributes.EMPTY);
     subchannel.requestConnection();
-    ArgumentCaptor<ManagedClientTransport.Listener> transportListenerCaptor =
-        ArgumentCaptor.forClass(ManagedClientTransport.Listener.class);
     verify(mockTransportFactory).newClientTransport(
         same(socketAddress), eq(authority), eq(userAgent));
-    verify(transport).start(transportListenerCaptor.capture());
+    MockClientTransportInfo transportInfo = transports.poll();
+    final ConnectionClientTransport transport = transportInfo.transport;
+    when(transport.getAttrs()).thenReturn(Attributes.EMPTY);
+    doAnswer(new Answer<ClientStream>() {
+        @Override
+        public ClientStream answer(InvocationOnMock in) throws Throwable {
+          newStreamContexts.add(Context.current());
+          return mock(ClientStream.class);
+        }
+      }).when(transport).newStream(
+          any(MethodDescriptor.class), any(Metadata.class), any(CallOptions.class),
+          any(StatsTraceContext.class));
+
     verify(creds, never()).applyRequestMetadata(
         any(MethodDescriptor.class), any(Attributes.class), any(Executor.class),
         any(MetadataApplier.class));
 
     // applyRequestMetadata() is called after the transport becomes ready.
-    transportListenerCaptor.getValue().transportReady();
+    transportInfo.listener.transportReady();
     when(mockPicker.pickSubchannel(any(Attributes.class), any(Metadata.class)))
         .thenReturn(PickResult.withSubchannel(subchannel));
     helper.updatePicker(mockPicker);
