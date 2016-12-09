@@ -80,6 +80,7 @@ import java.util.logging.Logger;
 import java.util.regex.Pattern;
 
 import javax.annotation.Nullable;
+import javax.annotation.concurrent.GuardedBy;
 import javax.annotation.concurrent.ThreadSafe;
 
 /** A communication channel for making outgoing RPCs. */
@@ -747,9 +748,15 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
   }
 
   private final class SubchannelImplImpl extends SubchannelImpl {
+    // Set right after SubchannelImplImpl is created.
     InternalSubchannel subchannel;
-    final AtomicBoolean shutdownRequested = new AtomicBoolean(false);
+    final Object shutdownLock = new Object();
     final Attributes attrs;
+
+    @GuardedBy("shutdownLock")
+    boolean shutdownRequested;
+    @GuardedBy("shutdownLock")
+    ScheduledFuture<?> delayedShutdownTask;
 
     SubchannelImplImpl(Attributes attrs) {
       this.attrs = checkNotNull(attrs, "attrs");
@@ -762,33 +769,45 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
 
     @Override
     public void shutdown() {
-      if (!shutdownRequested.compareAndSet(false, true)) {
-        return;
+      synchronized (shutdownLock) {
+        if (shutdownRequested) {
+          if (terminating && delayedShutdownTask != null) {
+            // shutdown() was previously called when terminating == false, thus a delayed shutdown()
+            // was scheduled.  Now since terminating == true, We should expedite the shutdown.
+            delayedShutdownTask.cancel(false);
+            delayedShutdownTask = null;
+            // Will fall through to the subchannel.shutdown() at the end.
+          } else {
+            return;
+          }
+        } else {
+          shutdownRequested = true;
+        }
       }
       ScheduledExecutorService scheduledExecutorCopy = scheduledExecutor;
       // Add a delay to shutdown to deal with the race between 1) a transport being picked and
       // newStream() being called on it, and 2) its Subchannel is shut down by LoadBalancer (e.g.,
       // because of address change, or because LoadBalancer is shutdown by Channel entering idle
-      // mode). If (2) wins, the app will see a spurious error. We work this around by delaying
+      // mode). If (2) wins, the app will see a spurious error. We work around this by delaying
       // shutdown of Subchannel for a few seconds here.
       if (!terminating && scheduledExecutorCopy != null) {
-        scheduledExecutorCopy.schedule(new LogExceptionRunnable(new Runnable() {
-            @Override
-            public void run() {
-              subchannel.shutdown();
-            }
-          }), 5, TimeUnit.SECONDS);
-        return;
+        delayedShutdownTask = scheduledExecutorCopy.schedule(new LogExceptionRunnable(
+                new Runnable() {
+                  @Override
+                  public void run() {
+                    subchannel.shutdown();
+                  }
+                }), 5, TimeUnit.SECONDS);
+      } else {
+        // Two possible ways to get here:
+        //
+        // 1. terminating == true: no more real streams will be created, it's safe and also
+        // desirable to shutdown timely.
+        //
+        // 2. scheduledExecutor == null: possible only when Channel has already been terminated.
+        // Though may not be necessary, we'll do it anyway.
+        subchannel.shutdown();
       }
-
-      // Two possible ways to get here:
-      //
-      // 1. terminating == true: no more real streams will be created, it's safe and also desirable
-      // to shutdown timely.
-      //
-      // 2. scheduledExecutor == null: possible only when Channel has already been terminated.
-      // Though may not be necessary, we'll do it anyway.
-      subchannel.shutdown();
     }
 
     @Override
