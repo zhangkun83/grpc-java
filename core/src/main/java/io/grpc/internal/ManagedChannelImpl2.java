@@ -272,6 +272,7 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
         // could cancel the timer.
         return;
       }
+      log.log(Level.FINE, "[{0}] Entering idle mode", getLogId());
       nameResolver.shutdown();
       nameResolver = getNameResolver(target, nameResolverFactory, nameResolverParams);
       loadBalancer.shutdown();
@@ -308,6 +309,7 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
     if (loadBalancer != null) {
       return;
     }
+    log.log(Level.FINE, "[{0}] Exiting idle mode", getLogId());
     LbHelperImpl helper = new LbHelperImpl(nameResolver);
     helper.lb = loadBalancerFactory.newLoadBalancer(helper);
     this.loadBalancer = helper.lb;
@@ -417,9 +419,7 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
     this.userAgent = userAgent;
     this.censusFactory = checkNotNull(censusFactory, "censusFactory");
 
-    if (log.isLoggable(Level.INFO)) {
-      log.log(Level.INFO, "[{0}] Created with target {1}", new Object[] {getLogId(), target});
-    }
+    log.log(Level.FINE, "[{0}] Created with target {1}", new Object[] {getLogId(), target});
   }
 
   @VisibleForTesting
@@ -475,9 +475,7 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
    */
   @Override
   public ManagedChannelImpl2 shutdown() {
-    if (log.isLoggable(Level.FINE)) {
-      log.log(Level.FINE, "[{0}] shutdown() called", getLogId());
-    }
+    log.log(Level.FINE, "[{0}] shutdown() called", getLogId());
     if (!shutdown.compareAndSet(false, true)) {
       return this;
     }
@@ -489,9 +487,7 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
           cancelIdleTimer();
         }
       }).drain();
-    if (log.isLoggable(Level.FINE)) {
-      log.log(Level.FINE, "[{0}] Shutting down", getLogId());
-    }
+    log.log(Level.FINE, "[{0}] Shutting down", getLogId());
     return this;
   }
 
@@ -502,9 +498,7 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
    */
   @Override
   public ManagedChannelImpl2 shutdownNow() {
-    if (log.isLoggable(Level.FINE)) {
-      log.log(Level.FINE, "[{0}] shutdownNow() called", getLogId());
-    }
+    log.log(Level.FINE, "[{0}] shutdownNow() called", getLogId());
     shutdown();
     delayedTransport.shutdownNow(SHUTDOWN_NOW_STATUS);
     channelExecutor.executeLater(new Runnable() {
@@ -586,9 +580,7 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
       return;
     }
     if (shutdown.get() && subchannels.isEmpty() && oobChannels.isEmpty()) {
-      if (log.isLoggable(Level.INFO)) {
-        log.log(Level.INFO, "[{0}] Terminated", getLogId());
-      }
+      log.log(Level.FINE, "[{0}] Terminated", getLogId());
       terminated = true;
       terminatedLatch.countDown();
       if (usingSharedExecutor) {
@@ -647,10 +639,8 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
               }
             });
       subchannel.subchannel = internalSubchannel;
-      if (log.isLoggable(Level.FINE)) {
-        log.log(Level.FINE, "[{0}] {1} created for {2}",
-            new Object[] {getLogId(), internalSubchannel.getLogId(), addressGroup});
-      }
+      log.log(Level.FINE, "[{0}] {1} created for {2}",
+          new Object[] {getLogId(), internalSubchannel.getLogId(), addressGroup});
       channelExecutor.executeLater(new Runnable() {
           @Override
           public void run() {
@@ -716,7 +706,8 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
         onError(Status.UNAVAILABLE.withDescription("NameResolver returned an empty list"));
         return;
       }
-
+      log.log(Level.FINE, "[{0}] resolved address: {1}, config={2}",
+          new Object[] {getLogId(), servers, config});
       channelExecutor.executeLater(new Runnable() {
           @Override
           public void run() {
@@ -726,8 +717,9 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
             try {
               balancer.handleResolvedAddresses(servers, config);
             } catch (Throwable e) {
-              // It must be a bug! Push the exception back to LoadBalancer in the hope that it may be
-              // propagated to the application.
+              log.log(Level.WARNING, "[" + getLogId() + "] Caught exception from LoadBalancer", e);
+              // It must be a bug! Push the exception back to LoadBalancer in the hope that it may
+              // be propagated to the application.
               balancer.handleNameResolutionError(Status.INTERNAL.withCause(e)
                   .withDescription("Thrown from handleResolvedAddresses(): " + e));
             }
@@ -738,6 +730,8 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
     @Override
     public void onError(final Status error) {
       checkArgument(!error.isOk(), "the error status must not be OK");
+      log.log(Level.WARNING, "[{0}] Failed to resolve name. status={1}",
+          new Object[] {getLogId(), error});
       channelExecutor.executeLater(new Runnable() {
           @Override
           public void run() {
