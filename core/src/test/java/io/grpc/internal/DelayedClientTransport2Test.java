@@ -462,4 +462,8 @@ public class DelayedClientTransport2Test {
     verify(subchannel).obtainActiveTransport();
     assertSame(mockRealStream, stream);
   }
+
+  @Test
+  public void reprocess_samePicker() {
+  }
 }

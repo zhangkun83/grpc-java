@@ -87,6 +87,9 @@ final class DelayedClientTransport2 implements ManagedClientTransport {
   @Nullable
   private SubchannelPicker lastPicker;
 
+  @GuardedBy("lock")
+  private long lastPickerVersion;
+
   /**
    * Creates a new delayed transport.
    *
@@ -143,12 +146,14 @@ final class DelayedClientTransport2 implements ManagedClientTransport {
       CallOptions callOptions, StatsTraceContext statsTraceCtx) {
     try {
       SubchannelPicker picker = null;
+      long pickerVersion = -1;
       synchronized (lock) {
         if (!shutdown) {
           if (lastPicker == null) {
             return createPendingStream(method, headers, callOptions, statsTraceCtx);
           }
           picker = lastPicker;
+          pickerVersion = lastPickerVersion;
         }
       }
       if (picker != null) {
@@ -166,10 +171,11 @@ final class DelayedClientTransport2 implements ManagedClientTransport {
             if (shutdown) {
               break;
             }
-            if (picker == lastPicker) {
+            if (pickerVersion == lastPickerVersion) {
               return createPendingStream(method, headers, callOptions, statsTraceCtx);
             }
             picker = lastPicker;
+            pickerVersion = lastPickerVersion;
           }
         }
       }
@@ -266,18 +272,18 @@ final class DelayedClientTransport2 implements ManagedClientTransport {
    * pick is successful, otherwise keep it pending.
    *
    * <p>This method may be called concurrently with {@code newStream()}, and it's safe.  All pending
-   * streams will be served by the latest picker as soon as possible.
+   * streams will be served by the latest picker (if a same picker is given more than once, they are
+   * considered different pickers) as soon as possible.
    *
    * <p>This method <strong>must not</strong> be called concurrently, with itself or with {@link
    * #setTransportSupplier}/{@link #setTransport}.
-   *
-   * @return the version number of the given picker.
    */
   final void reprocess(SubchannelPicker picker) {
     ArrayList<PendingStream> toProcess;
     ArrayList<PendingStream> toRemove = new ArrayList<PendingStream>();
     synchronized (lock) {
       lastPicker = picker;
+      lastPickerVersion++;
       if (pendingStreams == null || pendingStreams.isEmpty()) {
         return;
       }
