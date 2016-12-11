@@ -657,7 +657,8 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
     }
 
     @Override
-    public ManagedChannel createOobChannel(EquivalentAddressGroup addressGroup, String authority) {
+    public ManagedChannel createOobChannel(
+        EquivalentAddressGroup addressGroup, String authority, Executor executor) {
       throw new UnsupportedOperationException();
     }
 
