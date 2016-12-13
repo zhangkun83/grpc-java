@@ -61,6 +61,7 @@ import io.grpc.LoadBalancer2.PickResult;
 import io.grpc.LoadBalancer2.Subchannel;
 import io.grpc.LoadBalancer2.SubchannelPicker;
 import io.grpc.LoadBalancer2;
+import io.grpc.ManagedChannel;
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
 import io.grpc.NameResolver;
@@ -123,6 +124,7 @@ public class ManagedChannelImpl2IdlenessTest {
   @Mock private NameResolver mockNameResolver;
   @Mock private NameResolver.Factory mockNameResolverFactory;
   @Mock private ClientCall.Listener<Integer> mockCallListener;
+  @Mock private ClientCall.Listener<Integer> mockCallListener2;
   @Captor private ArgumentCaptor<NameResolver.Listener> nameResolverListenerCaptor;
   private BlockingQueue<MockClientTransportInfo> newTransports;
 
@@ -295,6 +297,49 @@ public class ManagedChannelImpl2IdlenessTest {
     timer.forwardTime(IDLE_TIMEOUT_SECONDS - 1, TimeUnit.SECONDS);
     verify(mockLoadBalancer, never()).shutdown();
     timer.forwardTime(1, TimeUnit.SECONDS);
+    verify(mockLoadBalancer).shutdown();
+  }
+
+  @Test
+  public void oobTransportDoesNotAffectIdleness() {
+    FakeClock oobExecutor = new FakeClock();
+    // Start a call, which goes to delayed transport
+    ClientCall<String, Integer> call = channel.newCall(method, CallOptions.DEFAULT);
+    call.start(mockCallListener, new Metadata());
+
+    // Verify that we have exited the idle mode
+    ArgumentCaptor<Helper> helperCaptor = ArgumentCaptor.forClass(null);
+    verify(mockLoadBalancerFactory).newLoadBalancer(helperCaptor.capture());
+    Helper helper = helperCaptor.getValue();
+
+    // Fail the RPC
+    SubchannelPicker failingPicker = mock(SubchannelPicker.class);
+    when(failingPicker.pickSubchannel(any(Attributes.class), any(Metadata.class)))
+        .thenReturn(PickResult.withError(Status.UNAVAILABLE));
+    helper.updatePicker(failingPicker);
+    executor.runDueTasks();
+    verify(mockCallListener).onClose(same(Status.UNAVAILABLE), any(Metadata.class));
+
+    // ... so that the channel resets its in-use state
+    assertFalse(channel.inUseStateAggregator.isInUse());
+
+    // Now make an RPC on an OOB channel
+    ManagedChannel oob = helper.createOobChannel(addressGroupList.get(0), "oobauthority",
+        oobExecutor.getScheduledExecutorService());
+    verify(mockTransportFactory, never())
+        .newClientTransport(any(SocketAddress.class), same("oobauthority"), same(USER_AGENT));
+    ClientCall<String, Integer> oobCall = oob.newCall(method, CallOptions.DEFAULT);
+    oobCall.start(mockCallListener2, new Metadata());
+    verify(mockTransportFactory)
+        .newClientTransport(any(SocketAddress.class), same("oobauthority"), same(USER_AGENT));
+    MockClientTransportInfo oobTransportInfo = newTransports.poll();
+    assertEquals(0, newTransports.size());
+    // The OOB transport reports in-use state
+    oobTransportInfo.listener.transportInUse(true);
+
+    // But it won't stop the channel from going idle
+    verify(mockLoadBalancer, never()).shutdown();
+    timer.forwardTime(IDLE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
     verify(mockLoadBalancer).shutdown();
   }
 

@@ -659,7 +659,31 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
     @Override
     public ManagedChannel createOobChannel(
         EquivalentAddressGroup addressGroup, String authority, Executor executor) {
-      throw new UnsupportedOperationException();
+      ScheduledExecutorService scheduledExecutorCopy = scheduledExecutor;
+      checkState(scheduledExecutorCopy != null,
+          "scheduledExecutor is already cleared. Looks like you are calling this method after "
+          + "you've already shut down");
+      final OobChannel oobChannel = new OobChannel(censusFactory, authority, executor,
+          scheduledExecutorCopy, stopwatchSupplier, channelExecutor);
+      InternalSubchannel internalSubchannel = new InternalSubchannel(
+          addressGroup, authority, userAgent, backoffPolicyProvider, transportFactory,
+          scheduledExecutorCopy, stopwatchSupplier, channelExecutor,
+          new InternalSubchannel.Callback() {
+            @Override
+            void onTerminated(InternalSubchannel is) {
+              oobChannels.remove(is);
+              oobChannel.handleSubchannelTerminated();
+              maybeTerminateChannel();
+            }
+
+            @Override
+            void onStateChange(InternalSubchannel is, ConnectivityStateInfo newState) {
+              oobChannel.handleSubchannelStateChange(newState);
+            }
+          });
+      oobChannels.add(internalSubchannel);
+      oobChannel.setSubchannel(internalSubchannel);
+      return oobChannel;
     }
 
     @Override

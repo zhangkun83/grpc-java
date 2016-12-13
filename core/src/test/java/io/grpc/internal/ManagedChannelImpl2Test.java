@@ -78,6 +78,7 @@ import io.grpc.LoadBalancer2.Helper;
 import io.grpc.LoadBalancer2.PickResult;
 import io.grpc.LoadBalancer2.Subchannel;
 import io.grpc.LoadBalancer2.SubchannelPicker;
+import io.grpc.ManagedChannel;
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
 import io.grpc.NameResolver;
@@ -167,6 +168,8 @@ public class ManagedChannelImpl2Test {
   private ClientCall.Listener<Integer> mockCallListener2;
   @Mock
   private ClientCall.Listener<Integer> mockCallListener3;
+  @Mock
+  private ClientCall.Listener<Integer> mockCallListener4;
   @Mock
   private SharedResourceHolder.Resource<ScheduledExecutorService> timerService;
   @Mock
@@ -744,6 +747,77 @@ public class ManagedChannelImpl2Test {
 
   @Test
   public void oobchannels() {
+    createChannel(new FakeNameResolverFactory(true), NO_INTERCEPTOR);
+    FakeClock oobExecutor = new FakeClock();
+
+    ManagedChannel oob = helper.createOobChannel(addressGroup, "oobauthority",
+        oobExecutor.getScheduledExecutorService());
+    assertEquals("oobauthority", oob.authority());
+
+    // OOB channels create connections lazily.  A new call will initiate the connection.
+    Metadata headers = new Metadata();
+    ClientCall<String, Integer> call = oob.newCall(method, CallOptions.DEFAULT);
+    call.start(mockCallListener, headers);
+    verify(mockTransportFactory).newClientTransport(socketAddress, "oobauthority", userAgent);
+    MockClientTransportInfo transportInfo = transports.poll();
+    assertNotNull(transportInfo);
+
+    assertEquals(0, oobExecutor.numPendingTasks());
+    transportInfo.listener.transportReady();
+    assertEquals(1, oobExecutor.runDueTasks());
+    verify(transportInfo.transport).newStream(same(method), same(headers),
+        same(CallOptions.DEFAULT), any(StatsTraceContext.class));
+
+    // The transport goes away
+    transportInfo.listener.transportShutdown(Status.UNAVAILABLE);
+    transportInfo.listener.transportTerminated();
+
+    // A new call will trigger a new transport
+    ClientCall<String, Integer> call2 = oob.newCall(method, CallOptions.DEFAULT);
+    call2.start(mockCallListener2, headers);
+    ClientCall<String, Integer> call3 = oob.newCall(method, CallOptions.DEFAULT.withWaitForReady());
+    call3.start(mockCallListener3, headers);
+    verify(mockTransportFactory, times(2)).newClientTransport(
+        socketAddress, "oobauthority", userAgent);
+    transportInfo = transports.poll();
+    assertNotNull(transportInfo);
+
+    // This transport fails
+    Status transportError = Status.UNAVAILABLE.withDescription("Connection refused");
+    assertEquals(0, oobExecutor.numPendingTasks());
+    transportInfo.listener.transportShutdown(transportError);
+    assertTrue(oobExecutor.runDueTasks() > 0);
+
+    // Fail-fast RPC will fail, while wait-for-ready RPC will still be pending
+    verify(mockCallListener2).onClose(same(transportError), any(Metadata.class));
+    verify(mockCallListener3, never()).onClose(any(Status.class), any(Metadata.class));
+
+    // Shutdown
+    assertFalse(oob.isShutdown());
+    oob.shutdown();
+    assertTrue(oob.isShutdown());
+
+    // New RPCs will be rejected.
+    assertEquals(0, oobExecutor.numPendingTasks());
+    ClientCall<String, Integer> call4 = oob.newCall(method, CallOptions.DEFAULT);
+    call4.start(mockCallListener4, headers);
+    assertTrue(oobExecutor.runDueTasks() > 0);
+    verify(mockCallListener4).onClose(statusCaptor.capture(), any(Metadata.class));
+
+    // The pending RPC will still be pending
+    verify(mockCallListener3, never()).onClose(any(Status.class), any(Metadata.class));
+
+    // This will shutdownNow() the delayed transport, terminating the pending RPC
+    assertEquals(0, oobExecutor.numPendingTasks());
+    oob.shutdownNow();
+    assertTrue(oobExecutor.runDueTasks() > 0);
+    verify(mockCallListener3).onClose(any(Status.class), any(Metadata.class));
+
+    // Delayed transport has already terminated.  Terminating the transport will terminate
+    // the subchannel, which in turn terimate the OOB channel.
+    assertFalse(oob.isTerminated());
+    transportInfo.listener.transportTerminated();
+    assertTrue(oob.isTerminated());
   }
 
   @Test

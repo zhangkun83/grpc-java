@@ -44,7 +44,6 @@ import io.grpc.CallOptions;
 import io.grpc.ClientCall;
 import io.grpc.ConnectivityStateInfo;
 import io.grpc.EquivalentAddressGroup;
-import io.grpc.LoadBalancer2.Helper;
 import io.grpc.LoadBalancer2.PickResult;
 import io.grpc.LoadBalancer2.SubchannelPicker;
 import io.grpc.ManagedChannel;
@@ -59,6 +58,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import javax.annotation.concurrent.GuardedBy;
 import javax.annotation.concurrent.ThreadSafe;
 
 /**
@@ -69,9 +69,10 @@ import javax.annotation.concurrent.ThreadSafe;
 final class OobChannel extends ManagedChannel implements WithLogId {
   private static final Logger log = Logger.getLogger(OobChannel.class.getName());
 
+  private SubchannelImpl subchannelImpl;
+  private SubchannelPicker subchannelPicker;
+
   private final LogId logId = LogId.allocate(getClass().getName());
-  private final InternalSubchannel subchannel;
-  private final Helper helper;
   private final CensusContextFactory censusFactory;
   private final String authority;
   private final DelayedClientTransport2 delayedTransport;
@@ -80,33 +81,6 @@ final class OobChannel extends ManagedChannel implements WithLogId {
   private final Supplier<Stopwatch> stopwatchSupplier;
   private final CountDownLatch terminatedLatch = new CountDownLatch(1);
   private volatile boolean shutdown;
-
-  private final SubchannelImpl subchannelImpl = new SubchannelImpl() {
-      @Override
-      public void shutdown() {
-        subchannel.shutdown();
-      }
-
-      @Override
-      ClientTransport obtainActiveTransport() {
-        return subchannel.obtainActiveTransport();
-      }
-
-      @Override
-      public void requestConnection() {
-        subchannel.obtainActiveTransport();
-      }
-
-      @Override
-      public EquivalentAddressGroup getAddresses() {
-        return subchannel.getAddressGroup();
-      }
-
-      @Override
-      public Attributes getAttributes() {
-        return Attributes.EMPTY;
-      }
-    };
 
   private final ClientTransportProvider transportProvider = new ClientTransportProvider() {
     @Override
@@ -118,29 +92,78 @@ final class OobChannel extends ManagedChannel implements WithLogId {
     }
   };
 
-  private final SubchannelPicker subchannelPicker = new SubchannelPicker() {
-      final PickResult result = PickResult.withSubchannel(subchannelImpl);
-
-      @Override
-      public PickResult pickSubchannel(Attributes affinity, Metadata headers) {
-        return result;
-      }
-    };
-
-  OobChannel(CensusContextFactory censusFactory, Helper helper, InternalSubchannel subchannel,
-      String authority, Executor executor, ScheduledExecutorService deadlineCancellationExecutor,
-      Supplier<Stopwatch> stopwatchSupplier,
+  OobChannel(CensusContextFactory censusFactory, String authority, Executor executor,
+      ScheduledExecutorService deadlineCancellationExecutor, Supplier<Stopwatch> stopwatchSupplier,
       ChannelExecutor channelExecutor) {
     this.censusFactory = checkNotNull(censusFactory, "censusFactory");
-    this.subchannel = checkNotNull(subchannel, "subchannel");
-    this.helper = checkNotNull(helper, "helper");
     this.authority = checkNotNull(authority, "authority");
     this.executor = checkNotNull(executor, "executor");
     this.deadlineCancellationExecutor = checkNotNull(
         deadlineCancellationExecutor, "deadlineCancellationExecutor");
     this.stopwatchSupplier = checkNotNull(stopwatchSupplier, "stopwatchSupplier");
     this.delayedTransport = new DelayedClientTransport2(executor, channelExecutor);
+    this.delayedTransport.start(new ManagedClientTransport.Listener() {
+        @Override
+        public void transportShutdown(Status s) {
+          // Don't care
+        }
+
+        @Override
+        public void transportTerminated() {
+          subchannelImpl.shutdown();
+        }
+
+        @Override
+        public void transportReady() {
+          // Don't care
+        }
+
+        @Override
+        public void transportInUse(boolean inUse) {
+          // Don't care
+        }
+      });
+  }
+
+  // Must be called only once, right after the OobChannel is created.
+  void setSubchannel(final InternalSubchannel subchannel) {
     log.log(Level.FINE, "[{0}] Created with [{1}]", new Object[] {this, subchannel});
+    subchannelImpl = new SubchannelImpl() {
+        @Override
+        public void shutdown() {
+          subchannel.shutdown();
+        }
+
+        @Override
+        ClientTransport obtainActiveTransport() {
+          return subchannel.obtainActiveTransport();
+        }
+
+        @Override
+        public void requestConnection() {
+          subchannel.obtainActiveTransport();
+        }
+
+        @Override
+        public EquivalentAddressGroup getAddresses() {
+          return subchannel.getAddressGroup();
+        }
+
+        @Override
+        public Attributes getAttributes() {
+          return Attributes.EMPTY;
+        }
+      };
+
+    subchannelPicker = new SubchannelPicker() {
+        final PickResult result = PickResult.withSubchannel(subchannelImpl);
+
+        @Override
+        public PickResult pickSubchannel(Attributes affinity, Metadata headers) {
+          return result;
+        }
+      };
+    delayedTransport.reprocess(subchannelPicker);
   }
 
   @Override
@@ -149,7 +172,8 @@ final class OobChannel extends ManagedChannel implements WithLogId {
     StatsTraceContext statsTraceCtx = StatsTraceContext.newClientContext(
         methodDescriptor.getFullMethodName(), censusFactory, stopwatchSupplier);
     return new ClientCallImpl<RequestT, ResponseT>(methodDescriptor,
-        new SerializingExecutor(executor), callOptions, statsTraceCtx, transportProvider,
+        callOptions.getExecutor() == null ? executor : callOptions.getExecutor(),
+        callOptions, statsTraceCtx, transportProvider,
         deadlineCancellationExecutor);
   }
 
@@ -196,10 +220,10 @@ final class OobChannel extends ManagedChannel implements WithLogId {
     switch (newState.getState()) {
       case READY:
       case IDLE:
-        helper.updatePicker(subchannelPicker);
+        delayedTransport.reprocess(subchannelPicker);
         break;
       case TRANSIENT_FAILURE:
-        helper.updatePicker(new SubchannelPicker() {
+        delayedTransport.reprocess(new SubchannelPicker() {
             final PickResult errorResult = PickResult.withError(newState.getStatus());
 
             @Override
@@ -212,6 +236,8 @@ final class OobChannel extends ManagedChannel implements WithLogId {
   }
 
   void handleSubchannelTerminated() {
+    // When delayedTransport is terminated, it shuts down subchannel.  Therefore, at this point
+    // both delayedTransport and subchannel have terminated.
     terminatedLatch.countDown();
   }
 }
