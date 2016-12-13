@@ -219,9 +219,8 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
             nameResolver = null;
           }
 
-          // Only after we shut down LoadBalancer, will we shutdown the subchannels for
-          // shutdownNow.  If it had been done earlier, LoadBalancer may have created new
-          // subchannels after that.
+          // Until LoadBalancer is shutdown, it may still create new subchannels.  We catch them
+          // here.
           maybeShutdownNowSubchannels();
           maybeTerminateChannel();
         }
@@ -646,7 +645,8 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
           public void run() {
             if (terminating) {
               internalSubchannel.shutdown();
-            } else if (!terminated) {
+            }
+            if (!terminated) {
               // If channel has not terminated, it will track the subchannel and block termination
               // for it.
               subchannels.add(internalSubchannel);
@@ -665,9 +665,10 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
           + "you've already shut down");
       final OobChannel oobChannel = new OobChannel(censusFactory, authority, executor,
           scheduledExecutorCopy, stopwatchSupplier, channelExecutor);
-      InternalSubchannel internalSubchannel = new InternalSubchannel(
+      final InternalSubchannel internalSubchannel = new InternalSubchannel(
           addressGroup, authority, userAgent, backoffPolicyProvider, transportFactory,
           scheduledExecutorCopy, stopwatchSupplier, channelExecutor,
+          // All callback methods are run from channelExecutor
           new InternalSubchannel.Callback() {
             @Override
             void onTerminated(InternalSubchannel is) {
@@ -681,8 +682,20 @@ public final class ManagedChannelImpl2 extends ManagedChannel implements WithLog
               oobChannel.handleSubchannelStateChange(newState);
             }
           });
-      oobChannels.add(internalSubchannel);
       oobChannel.setSubchannel(internalSubchannel);
+      channelExecutor.executeLater(new Runnable() {
+          @Override
+          public void run() {
+            if (terminating) {
+              oobChannel.shutdown();
+            }
+            if (!terminated) {
+              // If channel has not terminated, it will track the subchannel and block termination
+              // for it.
+              oobChannels.add(internalSubchannel);
+            }
+          }
+        }).drain();
       return oobChannel;
     }
 

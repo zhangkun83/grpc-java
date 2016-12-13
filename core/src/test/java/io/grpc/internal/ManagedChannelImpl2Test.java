@@ -813,11 +813,15 @@ public class ManagedChannelImpl2Test {
     assertTrue(oobExecutor.runDueTasks() > 0);
     verify(mockCallListener3).onClose(any(Status.class), any(Metadata.class));
 
-    // Delayed transport has already terminated.  Terminating the transport will terminate
-    // the subchannel, which in turn terimate the OOB channel.
+    // Shut down the channel, and it will not terminated because OOB channel has not.
+    channel.shutdown();
+    assertFalse(channel.isTerminated());
+    // Delayed transport has already terminated.  Terminating the transport terminates the
+    // subchannel, which in turn terimates the OOB channel, which terminates the channel.
     assertFalse(oob.isTerminated());
     transportInfo.listener.transportTerminated();
     assertTrue(oob.isTerminated());
+    assertTrue(channel.isTerminated());
   }
 
   @Test
