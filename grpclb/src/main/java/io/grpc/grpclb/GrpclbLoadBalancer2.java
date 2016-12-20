@@ -31,6 +31,14 @@
 
 package io.grpc.grpclb;
 
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
+import static io.grpc.ConnectivityState.IDLE;
+import static io.grpc.ConnectivityState.READY;
+import static io.grpc.ConnectivityState.SHUTDOWN;
+import static io.grpc.ConnectivityState.TRANSIENT_FAILURE;
+
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Supplier;
@@ -38,17 +46,27 @@ import com.google.common.base.Suppliers;
 
 import io.grpc.Attributes;
 import io.grpc.Channel;
+import io.grpc.ConnectivityStateInfo;
 import io.grpc.EquivalentAddressGroup;
+import io.grpc.LoadBalancer2;
 import io.grpc.LoadBalancer;
+import io.grpc.ManagedChannel;
+import io.grpc.Metadata;
+import io.grpc.PickFirstBalancerFactory2;
 import io.grpc.ResolvedServerInfo;
 import io.grpc.ResolvedServerInfoGroup;
 import io.grpc.Status;
 import io.grpc.TransportManager;
 import io.grpc.TransportManager.InterimTransport;
+import io.grpc.grpclb.GrpclbConstants.LbPolicy;
 import io.grpc.internal.GrpcUtil;
+import io.grpc.internal.LogId;
+import io.grpc.internal.ObjectPool;
 import io.grpc.internal.RoundRobinServerList;
 import io.grpc.internal.SharedResourceHolder;
+import io.grpc.internal.WithLogId;
 import io.grpc.stub.StreamObserver;
+import io.grpc.util.RoundRobinLoadBalancerFactory2;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -57,20 +75,32 @@ import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map.Entry;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import javax.annotation.concurrent.GuardedBy;
 
 /**
- * A {@link LoadBalancer} that uses the GRPCLB protocol.
+ * A {@link LoadBalancer2} that uses the GRPCLB protocol.
  */
-class GrpclbLoadBalancer2<T> extends LoadBalancer2<T> implements WithLogId {
+class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
   private static final Logger logger = Logger.getLogger(GrpclbLoadBalancer2.class.getName());
+  private static final SubchannelPicker BUFFER_PICKER = new SubchannelPicker() {
+      @Override
+      public PickResult pickSubchannel(Attributes affinity, Metadata headers) {
+        return PickResult.withNoResult();
+      }
+    };
+
   private final LogId logId = LogId.allocate(getClass().getName());
 
-  private final ObjectPool<? extends Executor> executorPool;
+  private final ObjectPool<Executor> executorPool;
   private final String serviceName;
   private final Helper helper;
 
@@ -97,13 +127,13 @@ class GrpclbLoadBalancer2<T> extends LoadBalancer2<T> implements WithLogId {
   // Points to the position of the LB address that lbCommChannel is bound to, if
   // lbCommChannel != null.
   private int currentLbIndex;
-  private StreamObserver<LoadBalanceResponse> lbResponseObserver;
+  private LbResponseObserver lbResponseObserver;
   private StreamObserver<LoadBalanceRequest> lbRequestWriter;
   private HashMap<EquivalentAddressGroup, Subchannel> subchannels;
   // A null element indicate a simulated error for throttling purpose
   private List<EquivalentAddressGroup> roundRobinList;
 
-  GrpclbLoadBalancer(Helper helper, ObjectPool<? extends Executor> executorPool) {
+  GrpclbLoadBalancer2(Helper helper, ObjectPool<Executor> executorPool) {
     this.serviceName = helper.getAuthority();
     this.helper = helper;
     this.executorPool = executorPool;
@@ -117,16 +147,20 @@ class GrpclbLoadBalancer2<T> extends LoadBalancer2<T> implements WithLogId {
 
   @Override
   public void handleSubchannelState(Subchannel subchannel, ConnectivityStateInfo newState) {
+    if (delegate != null) {
+      delegate.handleSubchannelState(subchannel, newState);
+      return;
+    }
     if (newState.getState() == SHUTDOWN || !(subchannels.values().contains(subchannel))) {
       return;
     }
-    helper.updatePicker(new RoundRobinPicker(createPickList()));
+    helper.updatePicker(getPickerForRoundRobin());
   }
 
   @Override
   public void handleResolvedAddresses(List<ResolvedServerInfoGroup> updatedServers,
       Attributes attributes) {
-    LbPolicy newLbPolicy = attributes.get(ATTR_LB_POLICY);
+    LbPolicy newLbPolicy = attributes.get(GrpclbConstants.ATTR_LB_POLICY);
     if (newLbPolicy == null) {
       newLbPolicy = LbPolicy.PICK_FIRST;
     }
@@ -138,9 +172,10 @@ class GrpclbLoadBalancer2<T> extends LoadBalancer2<T> implements WithLogId {
     List<EquivalentAddressGroup> newBackendAddressGroups =
         new ArrayList<EquivalentAddressGroup>();
     for (ResolvedServerInfoGroup serverInfoGroup : updatedServers) {
-      String lbAddrAuthority = serverInfoGroup.getAttributes().get(ATTR_ADDR_AUTHORITY);
+      String lbAddrAuthority = serverInfoGroup.getAttributes().get(
+          GrpclbConstants.ATTR_LB_ADDR_AUTHORITY);
       EquivalentAddressGroup eag = serverInfoGroup.toEquivalentAddressGroup();
-      if (lbAddrName != null) {
+      if (lbAddrAuthority != null) {
         newLbAddressGroups.add(new LbAddressGroup(eag, lbAddrAuthority));
       } else {
         newBackendAddressGroups.add(eag);
@@ -168,13 +203,13 @@ class GrpclbLoadBalancer2<T> extends LoadBalancer2<T> implements WithLogId {
       currentLbIndex = 0;
       switch (newLbPolicy) {
         case PICK_FIRST:
-          // TODO(zhangkun83): create a PickFirstBalancer and assign to delegate
-          throw new UnsupportedOperationException();
+          delegate = PickFirstBalancerFactory2.getInstance().newLoadBalancer(helper);
           break;
         case ROUND_ROBIN:
-          // TODO(zhangkun83): create a RoundRobinBalancer and assign to delegate
-          throw new UnsupportedOperationException();
+          delegate = RoundRobinLoadBalancerFactory2.getInstance().newLoadBalancer(helper);
           break;
+        default:
+          // Do nohting
       }
     }
     lbPolicy = newLbPolicy;
@@ -184,7 +219,7 @@ class GrpclbLoadBalancer2<T> extends LoadBalancer2<T> implements WithLogId {
       case PICK_FIRST:
       case ROUND_ROBIN:
         checkNotNull(delegate, "delegate should not be null. newLbPolicy=" + newLbPolicy);
-        delegate.handleResolvedAddresses(newBackendServerInfoGroup, Attributes.EMPTY);
+        delegate.handleResolvedAddresses(newBackendServerInfoGroups, Attributes.EMPTY);
         break;
       case GRPCLB:
         if (newLbAddressGroups.isEmpty()) {
@@ -211,8 +246,7 @@ class GrpclbLoadBalancer2<T> extends LoadBalancer2<T> implements WithLogId {
         }
         break;
       defaut:
-        handleError(new UnsupportedOperationException("Not implemented: " + newLbPolicy));
-        return;
+        throw new UnsupportedOperationException("Not implemented: " + newLbPolicy);
     }
   }
 
@@ -237,8 +271,8 @@ class GrpclbLoadBalancer2<T> extends LoadBalancer2<T> implements WithLogId {
     checkState(lbResponseObserver == null, "previous lbResponseObserver has not been cleared yet");
     LbAddressGroup currentLb = lbAddressGroups.get(currentLbIndex); 
     lbCommChannel = helper.createOobChannel(currentLb.getAddresses(), currentLb.getAuthority(),
-        oobExecutor);
-    LoadBalancerGrpc.LoadBalancerStub stub = LoadBalancerGrpc.newStub(channel);
+        lbCommExecutor);
+    LoadBalancerGrpc.LoadBalancerStub stub = LoadBalancerGrpc.newStub(lbCommChannel);
     lbResponseObserver = new LbResponseObserver();
     lbRequestWriter = stub.balanceLoad(lbResponseObserver);
 
@@ -270,29 +304,9 @@ class GrpclbLoadBalancer2<T> extends LoadBalancer2<T> implements WithLogId {
     // Fail the fail-fast RPCs first
     helper.updatePicker(new ErrorPicker(status));
     if (roundRobinList != null) {
-      helper.updatePicker(new RoundRobinPicker(createPickList()));
+      // Let the furture RPCs work if possible
+      helper.updatePicker(getPickerForRoundRobin());
     }
-    refreshPicker(status);
-  }
-
-  private List<PickResult> createPickList() {
-    List<PickResult> resultList = new ArrayList<PickResult>();
-    for (EquivalentAddressGroup eag : roundRobinList) {
-      if (eag == null) {
-        resultList.add(THROTTLED_RESULT);
-      } else {
-        Subchannel subchannel = subchannels.get(eag);
-        checkNotNull(subchannel, "Subchannel for %s not found", eag);
-        Attributes attrs = subchannel.getAttributes();
-        if (attrs.get(STATE_INFO).get() == READY) {
-          resultList.add(PickResult.withSubchannel(subchannel));
-        }
-      }
-    }
-    return resultList;
-    // TODO(zhangkun83): should we reduce the number of throttled result in proportion to the number
-    // of non-READY subchannels?  In the extreme case, do we still keep the throttled results if
-    // there is no READY subchannel?
   }
 
   @Override
@@ -355,7 +369,7 @@ class GrpclbLoadBalancer2<T> extends LoadBalancer2<T> implements WithLogId {
         return;
       }
       // Close Subchannels whose addresses have been delisted
-      for (Entry<EquivalentAddressGroup, Subchannel> entry : subchannels) {
+      for (Entry<EquivalentAddressGroup, Subchannel> entry : subchannels.entrySet()) {
         EquivalentAddressGroup eag = entry.getKey();
         if (!newSubchannelMap.containsKey(eag)) {
           entry.getValue().shutdown();
@@ -364,14 +378,14 @@ class GrpclbLoadBalancer2<T> extends LoadBalancer2<T> implements WithLogId {
 
       subchannels = newSubchannelMap;
       roundRobinList = newRoundRobinList;
-      refreshPicker();
+      helper.updatePicker(getPickerForRoundRobin());
     }
 
     @Override public void onError(final Throwable error) {
       helper.runSerialized(new Runnable() {
           @Override
           public void run() {
-            onStreamClosed(Status.fromThrowable(error)
+            handleStreamClosed(Status.fromThrowable(error)
                 .augmentDescription("Stream to GRPCLB LoadBalancer had an error"));
           }
         });
@@ -381,7 +395,7 @@ class GrpclbLoadBalancer2<T> extends LoadBalancer2<T> implements WithLogId {
       helper.runSerialized(new Runnable() {
           @Override
           public void run() {
-            onStreamClosed(Status.UNAVAILABLE.augmentDescription(
+            handleStreamClosed(Status.UNAVAILABLE.augmentDescription(
                     "Stream to GRPCLB LoadBalancer was closed"));
           }
         });
@@ -395,6 +409,35 @@ class GrpclbLoadBalancer2<T> extends LoadBalancer2<T> implements WithLogId {
       shutdownLbComm();
       currentLbIndex = (currentLbIndex + 1) % lbAddressGroups.size();
       startLbComm();
+    }
+  }
+
+  private SubchannelPicker getPickerForRoundRobin() {
+    List<PickResult> resultList = new ArrayList<PickResult>();
+    Status error = null;
+    for (EquivalentAddressGroup eag : roundRobinList) {
+      if (eag == null) {
+        resultList.add(THROTTLED_RESULT);
+      } else {
+        Subchannel subchannel = subchannels.get(eag);
+        checkNotNull(subchannel, "Subchannel for %s not found", eag);
+        Attributes attrs = subchannel.getAttributes();
+        ConnectivityStateInfo stateInfo = attrs.get(STATE_INFO).get();
+        if (stateInfo.getState() == READY) {
+          resultList.add(PickResult.withSubchannel(subchannel));
+        } else if (stateInfo.getState() == TRANSIENT_FAILURE) {
+          error = stateInfo.getStatus();
+        }
+      }
+    }
+    if (resultList.isEmpty()) {
+      if (error != null) {
+        return new ErrorPicker(error);
+      } else {
+        return BUFFER_PICKER;
+      }
+    } else {
+      return new RoundRobinPicker(resultList);
     }
   }
 
@@ -412,16 +455,23 @@ class GrpclbLoadBalancer2<T> extends LoadBalancer2<T> implements WithLogId {
   }
 
   private static class RoundRobinPicker extends SubchannelPicker {
-    final Iterator<PickResult> resultIterator
+    final List<PickResult> list;
+    int index;
 
     RoundRobinPicker(List<PickResult> resultList) {
-      resultIterator = Iterables.cycle(resultList).iterator();
+      checkArgument(!resultList.isEmpty(), "resultList is empty");
+      list = resultList;
     }
 
     @Override
     public PickResult pickSubchannel(Attributes affinity, Metadata headers) {
-      synchronized (resultIterator) {
-        return resultIterator.next();
+      synchronized (list) {
+        PickResult result = list.get(index);
+        index++;
+        if (index == list.size()) {
+          index = 0;
+        }
+        return result;
       }
     }
   }

@@ -46,7 +46,7 @@ public final class SharedResourcePool<T> implements ObjectPool<T> {
 
   @Override
   public T returnObject(T object) {
-    resource.release(object);
+    SharedResourceHolder.release(resource, object);
     return null;
   }
 }

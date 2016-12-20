@@ -31,6 +31,10 @@
 
 package io.grpc.grpclb;
 
+import static com.google.common.base.Preconditions.checkNotNull;
+
+import io.grpc.EquivalentAddressGroup;
+
 class LbAddressGroup {
   private final EquivalentAddressGroup addresses;
   private final String authority;

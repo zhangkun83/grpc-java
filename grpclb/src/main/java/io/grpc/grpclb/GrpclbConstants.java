@@ -31,6 +31,9 @@
 
 package io.grpc.grpclb;
 
+import io.grpc.Attributes;
+import io.grpc.ExperimentalApi;
+
 @ExperimentalApi
 public final class GrpclbConstants {
   public enum LbPolicy {
@@ -49,7 +52,7 @@ public final class GrpclbConstants {
    * The naming authority of an LB server address.  It is an address-group-level attribute, present
    * when the address group is a LoadBalancer.
    */
-  public static final Attributes.Key<String> LB_ADDR_AUTHORITY =
+  public static final Attributes.Key<String> ATTR_LB_ADDR_AUTHORITY =
       Attributes.Key.of("io.grpc.grpclb.lbAddrAuthority");
 
   private GrpclbConstants() { }
