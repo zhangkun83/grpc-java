@@ -91,7 +91,9 @@ import javax.annotation.concurrent.GuardedBy;
  */
 class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
   private static final Logger logger = Logger.getLogger(GrpclbLoadBalancer2.class.getName());
-  private static final SubchannelPicker BUFFER_PICKER = new SubchannelPicker() {
+
+  @VisibleForTesting
+  static final SubchannelPicker BUFFER_PICKER = new SubchannelPicker() {
       @Override
       public PickResult pickSubchannel(Attributes affinity, Metadata headers) {
         return PickResult.withNoResult();
@@ -103,6 +105,8 @@ class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
   private final ObjectPool<Executor> executorPool;
   private final String serviceName;
   private final Helper helper;
+  private final LoadBalancer2.Factory pickFirstBalancerFactory;
+  private final LoadBalancer2.Factory roundRobinBalancerFactory;
 
   private static final Attributes.Key<AtomicReference<ConnectivityStateInfo>> STATE_INFO =
         Attributes.Key.of("io.grpc.grpclb.GrpclbLoadBalancer.stateInfo");
@@ -133,11 +137,15 @@ class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
   // A null element indicate a simulated error for throttling purpose
   private List<EquivalentAddressGroup> roundRobinList;
 
-  GrpclbLoadBalancer2(Helper helper, ObjectPool<Executor> executorPool) {
+  GrpclbLoadBalancer2(Helper helper, ObjectPool<Executor> executorPool,
+      LoadBalancer2.Factory pickFirstBalancerFactory,
+      LoadBalancer2.Factory roundRobinBalancerFactory) {
     this.serviceName = helper.getAuthority();
     this.helper = helper;
     this.executorPool = executorPool;
     this.lbCommExecutor = executorPool.getObject();
+    this.pickFirstBalancerFactory = pickFirstBalancerFactory;
+    this.roundRobinBalancerFactory = roundRobinBalancerFactory;
   }
 
   @Override
@@ -154,6 +162,7 @@ class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
     if (newState.getState() == SHUTDOWN || !(subchannels.values().contains(subchannel))) {
       return;
     }
+    subchannel.getAttributes().get(STATE_INFO).set(newState);
     helper.updatePicker(getPickerForRoundRobin());
   }
 
@@ -184,9 +193,12 @@ class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
     }
 
     if (newBackendAddressGroups.isEmpty()) {
+      // handleResolvedAddresses()'s javadoc has guaranteed updatedServers is never empty.
+      checkState(!newLbAddressGroups.isEmpty(),
+          "No backend address nor LB address.  updatedServers=%s", updatedServers);
       if (newLbPolicy != LbPolicy.GRPCLB) {
         newLbPolicy = LbPolicy.GRPCLB;
-        logger.log(Level.FINE, "[{0}] Switching to GRPCLB because no backend addresses provided",
+        logger.log(Level.FINE, "[{0}] Switching to GRPCLB because all addresses are balancers",
             logId);
       }
     }
@@ -203,10 +215,10 @@ class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
       currentLbIndex = 0;
       switch (newLbPolicy) {
         case PICK_FIRST:
-          delegate = PickFirstBalancerFactory2.getInstance().newLoadBalancer(helper);
+          delegate = pickFirstBalancerFactory.newLoadBalancer(helper);
           break;
         case ROUND_ROBIN:
-          delegate = RoundRobinLoadBalancerFactory2.getInstance().newLoadBalancer(helper);
+          delegate = roundRobinBalancerFactory.newLoadBalancer(helper);
           break;
         default:
           // Do nohting
@@ -219,13 +231,13 @@ class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
       case PICK_FIRST:
       case ROUND_ROBIN:
         checkNotNull(delegate, "delegate should not be null. newLbPolicy=" + newLbPolicy);
-        delegate.handleResolvedAddresses(newBackendServerInfoGroups, Attributes.EMPTY);
+        delegate.handleResolvedAddresses(newBackendServerInfoGroups, attributes);
         break;
       case GRPCLB:
         if (newLbAddressGroups.isEmpty()) {
           shutdownLbComm();
           lbAddressGroups = null;
-          handleError(Status.UNAVAILABLE.withDescription(
+          handleGrpclbError(Status.UNAVAILABLE.withDescription(
                   "NameResolver returned no LB address while asking for GRPCLB"));
         } else {
           // See if the currently used LB server is in the new list.
@@ -245,8 +257,6 @@ class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
           }
         }
         break;
-      defaut:
-        throw new UnsupportedOperationException("Not implemented: " + newLbPolicy);
     }
   }
 
@@ -297,21 +307,28 @@ class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
     if (lbCommExecutor != null) {
       lbCommExecutor = executorPool.returnObject(lbCommExecutor);
     }
+    if (subchannels != null) {
+      for (Subchannel subchannel : subchannels.values()) {
+        subchannel.shutdown();
+      }
+      subchannels = null;
+    }
   }
 
-  private void handleError(Status status) {
+  private void handleGrpclbError(Status status) {
     lastError = status;
-    // Fail the fail-fast RPCs first
-    helper.updatePicker(new ErrorPicker(status));
-    if (roundRobinList != null) {
-      // Let the furture RPCs work if possible
-      helper.updatePicker(getPickerForRoundRobin());
+    if (roundRobinList == null || roundRobinList.isEmpty()) {
+      helper.updatePicker(new ErrorPicker(status));
     }
   }
 
   @Override
   public void handleNameResolutionError(Status error) {
-    handleError(error.augmentDescription("Name resolution failed"));
+    if (delegate != null) {
+      delegate.handleNameResolutionError(error);
+    } else {
+      handleGrpclbError(error);
+    }
   }
 
   private class LbResponseObserver implements StreamObserver<LoadBalanceResponse> {
@@ -348,7 +365,7 @@ class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
             address = new InetSocketAddress(
                 InetAddress.getByAddress(server.getIpAddress().toByteArray()), server.getPort());
           } catch (UnknownHostException e) {
-            handleError(e);
+            handleGrpclbError(Status.UNAVAILABLE.withCause(e));
             continue;
           }
           EquivalentAddressGroup eag = new EquivalentAddressGroup(address);
@@ -405,7 +422,7 @@ class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
       if (dismissed) {
         return;
       }
-      handleError(status);
+      handleGrpclbError(status);
       shutdownLbComm();
       currentLbIndex = (currentLbIndex + 1) % lbAddressGroups.size();
       startLbComm();
@@ -441,7 +458,18 @@ class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
     }
   }
 
-  private static class ErrorPicker extends SubchannelPicker {
+  @VisibleForTesting
+  LoadBalancer2 getDelegate() {
+    return delegate;
+  }
+
+  @VisibleForTesting
+  LbPolicy getLbPolicy() {
+    return lbPolicy;
+  }
+
+  @VisibleForTesting
+  final static class ErrorPicker extends SubchannelPicker {
     final PickResult result;
 
     ErrorPicker(Status status) {
@@ -454,7 +482,8 @@ class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
     }
   }
 
-  private static class RoundRobinPicker extends SubchannelPicker {
+  @VisibleForTesting
+  final static class RoundRobinPicker extends SubchannelPicker {
     final List<PickResult> list;
     int index;
 
