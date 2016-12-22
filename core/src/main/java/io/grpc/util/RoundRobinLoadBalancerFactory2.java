@@ -37,12 +37,6 @@ import static io.grpc.ConnectivityState.READY;
 import static io.grpc.ConnectivityState.TRANSIENT_FAILURE;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.BiMap;
-import com.google.common.collect.HashBiMap;
-import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Iterables;
-import com.google.common.collect.Lists;
-import com.google.common.collect.Sets;
 
 import io.grpc.Attributes;
 import io.grpc.ConnectivityStateInfo;
@@ -59,14 +53,18 @@ import io.grpc.ResolvedServerInfo;
 import io.grpc.ResolvedServerInfoGroup;
 import io.grpc.Status;
 
+import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Iterator;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
 import javax.annotation.Nullable;
-import javax.annotation.concurrent.GuardedBy;
 
 /**
  * A {@link LoadBalancer} that provides round-robin load balancing mechanism over the
@@ -94,7 +92,8 @@ public class RoundRobinLoadBalancerFactory2 extends LoadBalancer2.Factory {
   @VisibleForTesting
   static class RoundRobinLoadBalancer extends LoadBalancer2 {
     private final Helper helper;
-    private final BiMap<EquivalentAddressGroup, Subchannel> subchannels = HashBiMap.create();
+    private final Map<EquivalentAddressGroup, Subchannel> subchannels =
+        new HashMap<EquivalentAddressGroup, Subchannel>();
 
     @VisibleForTesting
     static final Attributes.Key<AtomicReference<ConnectivityStateInfo>> STATE_INFO =
@@ -107,13 +106,11 @@ public class RoundRobinLoadBalancerFactory2 extends LoadBalancer2.Factory {
     @Override
     public void handleResolvedAddresses(List<ResolvedServerInfoGroup> servers,
         Attributes attributes) {
-      // Make immutable copy of current keys to avoid ConcurrentModificationException when removing
-      // adresses from the subchannels map.
-      Set<EquivalentAddressGroup> currentAddrs = ImmutableSet.copyOf(subchannels.keySet());
+      Set<EquivalentAddressGroup> currentAddrs = subchannels.keySet();
       Set<EquivalentAddressGroup> latestAddrs =
           resolvedServerInfoGroupToEquivalentAddressGroup(servers);
-      Set<EquivalentAddressGroup> addedAddrs = Sets.difference(latestAddrs, currentAddrs);
-      Set<EquivalentAddressGroup> removedAddrs = Sets.difference(currentAddrs, latestAddrs);
+      Set<EquivalentAddressGroup> addedAddrs = setsDifference(latestAddrs, currentAddrs);
+      Set<EquivalentAddressGroup> removedAddrs = setsDifference(currentAddrs, latestAddrs);
 
       // NB(lukaszx0): we don't merge `attributes` with `subchannelAttr` because subchannel doesn't
       // need them. They're describing the resolved server list but we're not taking any action
@@ -150,7 +147,7 @@ public class RoundRobinLoadBalancerFactory2 extends LoadBalancer2.Factory {
 
     @Override
     public void handleSubchannelState(Subchannel subchannel, ConnectivityStateInfo stateInfo) {
-      if (!subchannels.inverse().containsKey(subchannel)) {
+      if (!subchannels.containsValue(subchannel)) {
         return;
       }
       if (stateInfo.getState() == IDLE) {
@@ -180,7 +177,7 @@ public class RoundRobinLoadBalancerFactory2 extends LoadBalancer2.Factory {
      */
     private static List<Subchannel> filterNonFailingSubchannels(
         Collection<Subchannel> subchannels) {
-      List<Subchannel> readySubchannels = Lists.newArrayList();
+      List<Subchannel> readySubchannels = new ArrayList<Subchannel>();
       for (Subchannel subchannel : subchannels) {
         if (getSubchannelStateInfoRef(subchannel).get().getState() == READY) {
           readySubchannels.add(subchannel);
@@ -194,7 +191,7 @@ public class RoundRobinLoadBalancerFactory2 extends LoadBalancer2.Factory {
      */
     private static Set<EquivalentAddressGroup> resolvedServerInfoGroupToEquivalentAddressGroup(
         List<ResolvedServerInfoGroup> groupList) {
-      Set<EquivalentAddressGroup> addrs = Sets.newHashSet();
+      Set<EquivalentAddressGroup> addrs = new HashSet<EquivalentAddressGroup>();
       for (ResolvedServerInfoGroup group : groupList) {
         for (ResolvedServerInfo server : group.getResolvedServerInfoList()) {
           addrs.add(new EquivalentAddressGroup(server.getAddress()));
@@ -230,35 +227,57 @@ public class RoundRobinLoadBalancerFactory2 extends LoadBalancer2.Factory {
         Subchannel subchannel) {
       return checkNotNull(subchannel.getAttributes().get(STATE_INFO), "STATE_INFO");
     }
+
+    private static <T> Set<T> setsDifference(Set<T> a, Set<T> b) {
+      Set<T> aCopy = new HashSet<T>(a);
+      aCopy.removeAll(b);
+      return aCopy;
+    }
   }
 
   @VisibleForTesting
   static class Picker extends SubchannelPicker {
-    @GuardedBy("this")
-    final Iterator<Subchannel> subchannelIterator;
     @Nullable
     final Status status;
-
+    private final List<Subchannel> list;
+    private int index;
     private final boolean empty;
 
     Picker(List<Subchannel> list, @Nullable Status status) {
       this.empty = list.isEmpty();
-      this.subchannelIterator = Iterables.cycle(list).iterator();
+      this.list = list;
       this.status = status;
     }
 
     @Override
     public PickResult pickSubchannel(Attributes affinity, Metadata headers) {
       if (!empty) {
-        synchronized (this) {
-          return PickResult.withSubchannel(subchannelIterator.next());
-        }
+        return PickResult.withSubchannel(nextSubchannel());
       } else {
         if (status != null) {
           return PickResult.withError(status);
         }
         return PickResult.withNoResult();
       }
+    }
+
+    private Subchannel nextSubchannel() {
+      if (empty) {
+        throw new NoSuchElementException();
+      }
+      synchronized (this) {
+        Subchannel val = list.get(index);
+        index++;
+        if (index >= list.size()) {
+          index -= list.size();
+        }
+        return val;
+      }
+    }
+
+    @VisibleForTesting
+    List<Subchannel> getList() {
+      return Collections.unmodifiableList(list);
     }
   }
 }
