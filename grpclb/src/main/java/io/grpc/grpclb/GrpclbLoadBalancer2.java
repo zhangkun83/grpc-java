@@ -248,11 +248,11 @@ class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
           }
           lbAddressGroups = newLbAddressGroups;
           if (newIndexOfCurrentLb == -1) {
-            // Current LB is delisted
             shutdownLbComm();
             currentLbIndex = 0;
             startLbComm();
           } else {
+            // Current LB is still in the list, calibrate index.
             currentLbIndex = newIndexOfCurrentLb;
           }
         }

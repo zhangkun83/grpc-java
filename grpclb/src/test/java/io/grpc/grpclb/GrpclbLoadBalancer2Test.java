@@ -46,6 +46,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import com.google.protobuf.ByteString;
+
 import io.grpc.Attributes;
 import io.grpc.CallOptions;
 import io.grpc.ClientCall;
@@ -76,6 +78,7 @@ import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
+import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -93,9 +96,9 @@ public class GrpclbLoadBalancer2Test {
   @Mock
   private Subchannel mockSubchannel;
   @Mock
-  private ManagedChannel mockOobChannel;
-  @Mock
-  private ClientCall<LoadBalanceRequest, LoadBalanceResponse> mockLbCall;
+  private LoadBalancerGrpc.LoadBalancerImplBase mockLbService;
+  private ManagedChannel fakeOobChannel;
+  private Server fakeLbServer;
   @Captor
   private ArgumentCaptor<SubchannelPicker> pickerCaptor;
   private final FakeExecutor executor = new FakeExecutor();
@@ -121,12 +124,13 @@ public class GrpclbLoadBalancer2Test {
         .thenReturn(pickFirstBalancer);
     when(roundRobinBalancerFactory.newLoadBalancer(any(Helper.class)))
         .thenReturn(roundRobinBalancer);
+    fakeLbServer = InProcessServerBuilder.forName("fakeLb")
+        .addService(mockLbService).build();
+    fakeOobChannel = InProcessChannelBuilder.forName("fakeLb").build();
     when(helper.createOobChannel(
             any(EquivalentAddressGroup.class), any(String.class), any(Executor.class)))
-        .thenReturn(mockOobChannel);
+        .thenReturn(fakeOobChannel);
     when(helper.getAuthority()).thenReturn(SERVICE_AUTHORITY);
-    when(mockOobChannel.newCall(any(MethodDescriptor.class), any(CallOptions.class)))
-        .thenReturn(mockLbCall);
     balancer = new GrpclbLoadBalancer2(helper, executorPool, pickFirstBalancerFactory,
         roundRobinBalancerFactory);
   }
@@ -178,6 +182,30 @@ public class GrpclbLoadBalancer2Test {
 
   @Test
   public void nameResolutionFailsThenRecoverToGrpclb() {
+    Status error = Status.NOT_FOUND.withDescription("www.google.com not found");
+    balancer.handleNameResolutionError(error);
+    verify(helper).updatePicker(pickerCaptor.capture());
+    ErrorPicker errorPicker = (ErrorPicker) pickerCaptor.getValue();
+    assertSame(error, errorPicker.result.getStatus());
+
+    // Recover with a subsequent success
+    List<ResolvedServerInfoGroup> resolvedServers = createResolvedServerInfoGroupList(true);
+    EquivalentAddressGroup eag = resolvedServers.get(0).toEquivalentAddressGroup();
+
+    Attributes resolutionAttrs = Attributes.newBuilder()
+        .set(GrpclbConstants.ATTR_LB_POLICY, LbPolicy.GRPCLB).build();
+    balancer.handleResolvedAddresses(resolvedServers, resolutionAttrs);
+
+    assertSame(LbPolicy.GRPCLB, balancer.getLbPolicy());
+    assertNull(balancer.getDelegate());
+    verify(helper).createOobChannel(eq(eag), eq("lb0.google.com"), same(executor));
+    verify(mockOobChannel).newCall(same(LoadBalancerGrpc.METHOD_BALANCE_LOAD),
+        eq(CallOptions.DEFAULT));
+
+    verifyNoMoreInteractions(pickFirstBalancerFactory);
+    verifyNoMoreInteractions(pickFirstBalancer);
+    verifyNoMoreInteractions(roundRobinBalancerFactory);
+    verifyNoMoreInteractions(roundRobinBalancer);
   }
 
   @Test
@@ -223,6 +251,38 @@ public class GrpclbLoadBalancer2Test {
 
   @Test
   public void grpclbThenNameResolutionFails() {
+    InOrder inOrder = inOrder(helper);
+    // Go to GRPCLB first
+    List<ResolvedServerInfoGroup> grpclbResolutionList =
+        createResolvedServerInfoGroupList(true, true);
+    Attributes grpclbResolutionAttrs = Attributes.newBuilder()
+        .set(GrpclbConstants.ATTR_LB_POLICY, LbPolicy.GRPCLB).build();
+    balancer.handleResolvedAddresses(grpclbResolutionList, grpclbResolutionAttrs);
+
+    assertSame(LbPolicy.GRPCLB, balancer.getLbPolicy());
+    assertNull(balancer.getDelegate());
+    verify(mockLbCall).start(lbCallListenerCaptor.capture(), any(Metadata.class));
+    ClientCall.Listener<LoadBalanceResponse> callListener = lbCallListenerCaptor.getValue();
+
+    // Let name resolution fail before round-robin list is ready
+    Status error = Status.NOT_FOUND.withDescription("www.google.com not found");
+    balancer.handleNameResolutionError(error);
+
+    inOrder.verify(helper).updatePicker(pickerCaptor.capture());
+    ErrorPicker errorPicker = (ErrorPicker) pickerCaptor.getValue();
+    assertSame(error, errorPicker.result.getStatus());
+
+    // Simulate receiving LB response
+    List<InetSocketAddress> backends = Arrays.asList(
+        new InetSocketAddress("127.0.0.1", 2000),
+        new InetSocketAddress("127.0.0.1", 2010));
+    callListener.onMessage(buildInitialResponse());
+    callListener.onMessage(buildLbResponse(backends));
+
+    inOrder.verify(helper).createSubchannel(
+        eq(new EquivalentAddressGroup(backends.get(0))), any(Attributes.class));
+    inOrder.verify(helper).createSubchannel(
+        eq(new EquivalentAddressGroup(backends.get(1))), any(Attributes.class));
   }
 
   @SuppressWarnings("unchecked")
@@ -292,7 +352,7 @@ public class GrpclbLoadBalancer2Test {
     verify(helper, times(2)).createOobChannel(
         eq(grpclbResolutionList.get(0).toEquivalentAddressGroup()),
         eq("lb0.google.com"), same(executor));
-    verify(helper).createOobChannel(any(EquivalentAddressGroup.class), any(String.class),
+    verify(helper, times(2)).createOobChannel(any(EquivalentAddressGroup.class), any(String.class),
         any(Executor.class));
     verify(mockOobChannel, times(2)).newCall(
         same(LoadBalancerGrpc.METHOD_BALANCE_LOAD), eq(CallOptions.DEFAULT));
@@ -301,13 +361,13 @@ public class GrpclbLoadBalancer2Test {
     // Special case: PICK_FIRST is the default
     pickFirstResolutionList = createResolvedServerInfoGroupList(true, false, false);
     pickFirstResolutionAttrs = Attributes.EMPTY;
-    verify(pickFirstBalancerFactory, never()).newLoadBalancer(any(Helper.class));
+    verify(pickFirstBalancerFactory).newLoadBalancer(any(Helper.class));
     verify(mockLbCall).halfClose();
     verify(mockOobChannel).shutdown();
     verify(mockOobChannel, never()).shutdownNow();
     balancer.handleResolvedAddresses(pickFirstResolutionList, pickFirstResolutionAttrs);
 
-    verify(pickFirstBalancerFactory).newLoadBalancer(same(helper));
+    verify(pickFirstBalancerFactory, times(2)).newLoadBalancer(same(helper));
     // Only non-LB addresses are passed to the delegate
     verify(pickFirstBalancer).handleResolvedAddresses(
         eq(pickFirstResolutionList.subList(1, 3)), same(pickFirstResolutionAttrs));
@@ -346,6 +406,25 @@ public class GrpclbLoadBalancer2Test {
     return list;
   }
 
+  private static LoadBalanceResponse buildInitialResponse() {
+    return LoadBalanceResponse.newBuilder().setInitialResponse(
+        InitialLoadBalanceResponse.getDefaultInstance())
+        .build();
+  }
+
+  private static LoadBalanceResponse buildLbResponse(List<InetSocketAddress> addrs) {
+    ServerList.Builder serverListBuilder = ServerList.newBuilder();
+    for (InetSocketAddress addr : addrs) {
+      serverListBuilder.addServers(Server.newBuilder()
+          .setIpAddress(ByteString.copyFrom(addr.getAddress().getAddress()))
+          .setPort(addr.getPort())
+          .build());
+    }
+    return LoadBalanceResponse.newBuilder()
+        .setServerList(serverListBuilder.build())
+        .build();
+  }
+
   private static class FakeSocketAddress extends SocketAddress {
     final String name;
 
@@ -356,6 +435,20 @@ public class GrpclbLoadBalancer2Test {
     @Override
     public String toString() {
       return "FakeSocketAddress-" + name;
+    }
+
+    @Override
+    public boolean equals(Object other) {
+      if (other instanceof FakeSocketAddress) {
+        FakeSocketAddress otherAddr = (FakeSocketAddress) other;
+        return name.equals(otherAddr.name);
+      }
+      return false;
+    }
+
+    @Override
+    public int hashCode() {
+      return name.hashCode();
     }
   }
 
