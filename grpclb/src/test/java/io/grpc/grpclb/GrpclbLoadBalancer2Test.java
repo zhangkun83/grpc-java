@@ -31,14 +31,17 @@
 
 package io.grpc.grpclb;
 
+import static com.google.common.base.Charsets.UTF_8;
 import static io.grpc.ConnectivityState.READY;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.eq;
 import static org.mockito.Matchers.same;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -46,6 +49,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import com.google.common.io.ByteStreams;
 import com.google.protobuf.ByteString;
 
 import io.grpc.Attributes;
@@ -60,14 +64,21 @@ import io.grpc.LoadBalancer2.SubchannelPicker;
 import io.grpc.LoadBalancer2;
 import io.grpc.ManagedChannel;
 import io.grpc.Metadata;
+import io.grpc.MethodDescriptor.Marshaller;
 import io.grpc.MethodDescriptor;
 import io.grpc.ResolvedServerInfo;
 import io.grpc.ResolvedServerInfoGroup;
 import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.grpc.grpclb.GrpclbConstants.LbPolicy;
 import io.grpc.grpclb.GrpclbLoadBalancer2.ErrorPicker;
 import io.grpc.grpclb.GrpclbLoadBalancer2.RoundRobinPicker;
+import io.grpc.inprocess.InProcessChannelBuilder;
+import io.grpc.inprocess.InProcessServerBuilder;
 import io.grpc.internal.ObjectPool;
+import io.grpc.stub.ClientCalls;
+import io.grpc.stub.StreamObserver;
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -77,11 +88,17 @@ import org.mockito.Captor;
 import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
+import org.mockito.invocation.InvocationOnMock;
+import org.mockito.stubbing.Answer;
 
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.concurrent.Executor;
 
@@ -91,14 +108,42 @@ public class GrpclbLoadBalancer2Test {
   private static final Attributes.Key<String> RESOLUTION_ATTR =
       Attributes.Key.of("resolution-attr");
   private static final String SERVICE_AUTHORITY = "api.google.com";
+
+  private static final MethodDescriptor<String, String> TRASH_METHOD = MethodDescriptor.create(
+      MethodDescriptor.MethodType.UNARY, "/service/trashmethod",
+      new StringMarshaller(), new StringMarshaller());
+
+  private static class StringMarshaller implements Marshaller<String> {
+    static final StringMarshaller INSTANCE = new StringMarshaller();
+
+    @Override
+    public InputStream stream(String value) {
+      return new ByteArrayInputStream(value.getBytes(UTF_8));
+    }
+
+    @Override
+    public String parse(InputStream stream) {
+      try {
+        return new String(ByteStreams.toByteArray(stream), UTF_8);
+      } catch (IOException ex) {
+        throw new RuntimeException(ex);
+      }
+    }
+  }
+
   @Mock
   private Helper helper;
   @Mock
   private Subchannel mockSubchannel;
   @Mock
   private LoadBalancerGrpc.LoadBalancerImplBase mockLbService;
-  private ManagedChannel fakeOobChannel;
-  private Server fakeLbServer;
+  @Captor
+  private ArgumentCaptor<StreamObserver<LoadBalanceResponse>> lbResponseObserverCaptor;
+  @Mock
+  private StreamObserver<LoadBalanceRequest> lbRequestObserver;
+  private LinkedList<ManagedChannel> fakeOobChannels = new LinkedList<ManagedChannel>();
+  private ArrayList<ManagedChannel> oobChannelTracker = new ArrayList<ManagedChannel>();
+  private io.grpc.Server fakeLbServer;
   @Captor
   private ArgumentCaptor<SubchannelPicker> pickerCaptor;
   private final FakeExecutor executor = new FakeExecutor();
@@ -117,22 +162,44 @@ public class GrpclbLoadBalancer2Test {
 
   @SuppressWarnings("unchecked")
   @Before
-  public void setUp() {
+  public void setUp() throws Exception {
     MockitoAnnotations.initMocks(this);
     when(executorPool.getObject()).thenReturn(executor);
     when(pickFirstBalancerFactory.newLoadBalancer(any(Helper.class)))
         .thenReturn(pickFirstBalancer);
     when(roundRobinBalancerFactory.newLoadBalancer(any(Helper.class)))
         .thenReturn(roundRobinBalancer);
+    when(mockLbService.balanceLoad(any(StreamObserver.class))).thenReturn(lbRequestObserver);
     fakeLbServer = InProcessServerBuilder.forName("fakeLb")
-        .addService(mockLbService).build();
-    fakeOobChannel = InProcessChannelBuilder.forName("fakeLb").build();
-    when(helper.createOobChannel(
-            any(EquivalentAddressGroup.class), any(String.class), any(Executor.class)))
-        .thenReturn(fakeOobChannel);
+        .directExecutor().addService(mockLbService).build().start();
+    doAnswer(new Answer<ManagedChannel>() {
+        @Override
+        public ManagedChannel answer(InvocationOnMock invocation) throws Throwable {
+          ManagedChannel channel = InProcessChannelBuilder.forName("fakeLb")
+              .directExecutor().build();
+          // #2444: non-determinism of Channel due to starting NameResolver on the timer
+          // "Prime" it before use
+          try {
+            ClientCalls.blockingUnaryCall(channel, TRASH_METHOD, CallOptions.DEFAULT, "trash");
+          } catch (StatusRuntimeException ignored) {
+          }
+          fakeOobChannels.add(channel);
+          oobChannelTracker.add(channel);
+          return channel;
+        }
+      }).when(helper).createOobChannel(
+          any(EquivalentAddressGroup.class), any(String.class), any(Executor.class));
     when(helper.getAuthority()).thenReturn(SERVICE_AUTHORITY);
     balancer = new GrpclbLoadBalancer2(helper, executorPool, pickFirstBalancerFactory,
         roundRobinBalancerFactory);
+  }
+
+  @After
+  public void tearDown() {
+    for (ManagedChannel channel : oobChannelTracker) {
+      channel.shutdownNow();
+    }
+    fakeLbServer.shutdownNow();
   }
 
   @Test
@@ -199,8 +266,7 @@ public class GrpclbLoadBalancer2Test {
     assertSame(LbPolicy.GRPCLB, balancer.getLbPolicy());
     assertNull(balancer.getDelegate());
     verify(helper).createOobChannel(eq(eag), eq("lb0.google.com"), same(executor));
-    verify(mockOobChannel).newCall(same(LoadBalancerGrpc.METHOD_BALANCE_LOAD),
-        eq(CallOptions.DEFAULT));
+    verify(mockLbService).balanceLoad(lbResponseObserverCaptor.capture());
 
     verifyNoMoreInteractions(pickFirstBalancerFactory);
     verifyNoMoreInteractions(pickFirstBalancer);
@@ -261,8 +327,12 @@ public class GrpclbLoadBalancer2Test {
 
     assertSame(LbPolicy.GRPCLB, balancer.getLbPolicy());
     assertNull(balancer.getDelegate());
-    verify(mockLbCall).start(lbCallListenerCaptor.capture(), any(Metadata.class));
-    ClientCall.Listener<LoadBalanceResponse> callListener = lbCallListenerCaptor.getValue();
+    verify(helper).createOobChannel(eq(grpclbResolutionList.get(0).toEquivalentAddressGroup()),
+        eq("lb0.google.com"), same(executor));
+    assertEquals(1, fakeOobChannels.size());
+    ManagedChannel oobChannel = fakeOobChannels.poll();
+    verify(mockLbService).balanceLoad(lbResponseObserverCaptor.capture());
+    StreamObserver<LoadBalanceResponse> lbResponseObserver = lbResponseObserverCaptor.getValue();
 
     // Let name resolution fail before round-robin list is ready
     Status error = Status.NOT_FOUND.withDescription("www.google.com not found");
@@ -276,8 +346,8 @@ public class GrpclbLoadBalancer2Test {
     List<InetSocketAddress> backends = Arrays.asList(
         new InetSocketAddress("127.0.0.1", 2000),
         new InetSocketAddress("127.0.0.1", 2010));
-    callListener.onMessage(buildInitialResponse());
-    callListener.onMessage(buildLbResponse(backends));
+    lbResponseObserver.onNext(buildInitialResponse());
+    lbResponseObserver.onNext(buildLbResponse(backends));
 
     inOrder.verify(helper).createSubchannel(
         eq(new EquivalentAddressGroup(backends.get(0))), any(Attributes.class));
@@ -299,10 +369,9 @@ public class GrpclbLoadBalancer2Test {
     assertNull(balancer.getDelegate());
     verify(helper).createOobChannel(eq(grpclbResolutionList.get(0).toEquivalentAddressGroup()),
         eq("lb0.google.com"), same(executor));
-    verify(helper).createOobChannel(any(EquivalentAddressGroup.class), any(String.class),
-        any(Executor.class));
-    verify(mockOobChannel).newCall(same(LoadBalancerGrpc.METHOD_BALANCE_LOAD), eq(CallOptions.DEFAULT));
-    verify(mockOobChannel).newCall(any(MethodDescriptor.class), any(CallOptions.class));
+    assertEquals(1, fakeOobChannels.size());
+    ManagedChannel oobChannel = fakeOobChannels.poll();
+    verify(mockLbService).balanceLoad(lbResponseObserverCaptor.capture());
 
     // Switch to PICK_FIRST
     List<ResolvedServerInfoGroup> pickFirstResolutionList =
@@ -310,9 +379,11 @@ public class GrpclbLoadBalancer2Test {
     Attributes pickFirstResolutionAttrs = Attributes.newBuilder()
         .set(GrpclbConstants.ATTR_LB_POLICY, LbPolicy.PICK_FIRST).build();
     verify(pickFirstBalancerFactory, never()).newLoadBalancer(any(Helper.class));
-    verify(mockLbCall, never()).halfClose();
-    verify(mockOobChannel, never()).shutdown();
-    verify(mockOobChannel, never()).shutdownNow();
+    verify(mockLbService).balanceLoad(lbResponseObserverCaptor.capture());
+    StreamObserver<LoadBalanceResponse> lbResponseObserver = lbResponseObserverCaptor.getValue();
+
+    verify(lbRequestObserver, never()).onCompleted();
+    assertFalse(oobChannel.isShutdown());
     balancer.handleResolvedAddresses(pickFirstResolutionList, pickFirstResolutionAttrs);
 
     verify(pickFirstBalancerFactory).newLoadBalancer(same(helper));
@@ -322,8 +393,8 @@ public class GrpclbLoadBalancer2Test {
     assertSame(LbPolicy.PICK_FIRST, balancer.getLbPolicy());
     assertSame(pickFirstBalancer, balancer.getDelegate());
     // GRPCLB connection is closed
-    verify(mockLbCall).halfClose();
-    verify(mockOobChannel).shutdown();
+    verify(lbRequestObserver).onCompleted();
+    assertTrue(oobChannel.isShutdown());
 
     // Switch to ROUND_ROBIN
     List<ResolvedServerInfoGroup> roundRobinResolutionList =
@@ -354,17 +425,15 @@ public class GrpclbLoadBalancer2Test {
         eq("lb0.google.com"), same(executor));
     verify(helper, times(2)).createOobChannel(any(EquivalentAddressGroup.class), any(String.class),
         any(Executor.class));
-    verify(mockOobChannel, times(2)).newCall(
-        same(LoadBalancerGrpc.METHOD_BALANCE_LOAD), eq(CallOptions.DEFAULT));
-    verify(mockOobChannel, times(2)).newCall(any(MethodDescriptor.class), any(CallOptions.class));
+    assertEquals(1, fakeOobChannels.size());
+    oobChannel = fakeOobChannels.poll();
+    verify(mockLbService, times(2)).balanceLoad(lbResponseObserverCaptor.capture());
 
     // Special case: PICK_FIRST is the default
     pickFirstResolutionList = createResolvedServerInfoGroupList(true, false, false);
     pickFirstResolutionAttrs = Attributes.EMPTY;
     verify(pickFirstBalancerFactory).newLoadBalancer(any(Helper.class));
-    verify(mockLbCall).halfClose();
-    verify(mockOobChannel).shutdown();
-    verify(mockOobChannel, never()).shutdownNow();
+    assertFalse(oobChannel.isShutdown());
     balancer.handleResolvedAddresses(pickFirstResolutionList, pickFirstResolutionAttrs);
 
     verify(pickFirstBalancerFactory, times(2)).newLoadBalancer(same(helper));
@@ -374,8 +443,7 @@ public class GrpclbLoadBalancer2Test {
     assertSame(LbPolicy.PICK_FIRST, balancer.getLbPolicy());
     assertSame(pickFirstBalancer, balancer.getDelegate());
     // GRPCLB connection is closed
-    verify(mockLbCall, times(2)).halfClose();
-    verify(mockOobChannel, times(2)).shutdown();
+    assertTrue(oobChannel.isShutdown());
   }
 
   @Test
