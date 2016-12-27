@@ -43,6 +43,7 @@ import static org.mockito.Matchers.eq;
 import static org.mockito.Matchers.same;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -141,6 +142,7 @@ public class GrpclbLoadBalancer2Test {
   private ArgumentCaptor<StreamObserver<LoadBalanceResponse>> lbResponseObserverCaptor;
   @Mock
   private StreamObserver<LoadBalanceRequest> lbRequestObserver;
+  private LinkedList<Subchannel> mockSubchannels = new LinkedList<Subchannel>();
   private LinkedList<ManagedChannel> fakeOobChannels = new LinkedList<ManagedChannel>();
   private ArrayList<ManagedChannel> oobChannelTracker = new ArrayList<ManagedChannel>();
   private io.grpc.Server fakeLbServer;
@@ -189,6 +191,26 @@ public class GrpclbLoadBalancer2Test {
         }
       }).when(helper).createOobChannel(
           any(EquivalentAddressGroup.class), any(String.class), any(Executor.class));
+    doAnswer(new Answer<Subchannel>() {
+        @Override
+        public Subchannel answer(InvocationOnMock invocation) throws Throwable {
+          Subchannel subchannel = mock(Subchannel.class);
+          EquivalentAddressGroup eag = (EquivalentAddressGroup) invocation.getArguments()[0];
+          Attributes attrs = (Attributes) invocation.getArguments()[1];
+          when(subchannel.getAddresses()).thenReturn(eag);
+          when(subchannel.getAttributes()).thenReturn(attrs);
+          mockSubchannels.add(subchannel);
+          return subchannel;
+        }
+      }).when(helper).createSubchannel(any(EquivalentAddressGroup.class), any(Attributes.class));
+    doAnswer(new Answer<Void>() {
+        @Override
+        public Void answer(InvocationOnMock invocation) throws Throwable {
+          Runnable task = (Runnable) invocation.getArguments()[0];
+          task.run();
+          return null;
+        }
+      }).when(helper).runSerialized(any(Runnable.class));
     when(helper.getAuthority()).thenReturn(SERVICE_AUTHORITY);
     balancer = new GrpclbLoadBalancer2(helper, executorPool, pickFirstBalancerFactory,
         roundRobinBalancerFactory);
@@ -196,6 +218,9 @@ public class GrpclbLoadBalancer2Test {
 
   @After
   public void tearDown() {
+    if (balancer != null) {
+      balancer.shutdown();
+    }
     for (ManagedChannel channel : oobChannelTracker) {
       channel.shutdownNow();
     }
@@ -346,9 +371,11 @@ public class GrpclbLoadBalancer2Test {
     List<InetSocketAddress> backends = Arrays.asList(
         new InetSocketAddress("127.0.0.1", 2000),
         new InetSocketAddress("127.0.0.1", 2010));
+    verify(helper, never()).runSerialized(any(Runnable.class));
     lbResponseObserver.onNext(buildInitialResponse());
     lbResponseObserver.onNext(buildLbResponse(backends));
 
+    verify(helper, times(2)).runSerialized(any(Runnable.class));
     inOrder.verify(helper).createSubchannel(
         eq(new EquivalentAddressGroup(backends.get(0))), any(Attributes.class));
     inOrder.verify(helper).createSubchannel(

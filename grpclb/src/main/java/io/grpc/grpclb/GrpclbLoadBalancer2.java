@@ -73,11 +73,13 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map.Entry;
+import java.util.Map;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicReference;
@@ -133,7 +135,7 @@ class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
   private int currentLbIndex;
   private LbResponseObserver lbResponseObserver;
   private StreamObserver<LoadBalanceRequest> lbRequestWriter;
-  private HashMap<EquivalentAddressGroup, Subchannel> subchannels;
+  private Map<EquivalentAddressGroup, Subchannel> subchannels = Collections.emptyMap();
   // A null element indicate a simulated error for throttling purpose
   private List<EquivalentAddressGroup> roundRobinList;
 
@@ -307,12 +309,10 @@ class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
     if (lbCommExecutor != null) {
       lbCommExecutor = executorPool.returnObject(lbCommExecutor);
     }
-    if (subchannels != null) {
-      for (Subchannel subchannel : subchannels.values()) {
-        subchannel.shutdown();
-      }
-      subchannels = null;
+    for (Subchannel subchannel : subchannels.values()) {
+      subchannel.shutdown();
     }
+    subchannels = Collections.emptyMap();
   }
 
   private void handleGrpclbError(Status status) {
