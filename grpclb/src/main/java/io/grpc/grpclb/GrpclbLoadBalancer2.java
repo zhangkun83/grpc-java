@@ -112,7 +112,8 @@ class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
 
   private static final Attributes.Key<AtomicReference<ConnectivityStateInfo>> STATE_INFO =
         Attributes.Key.of("io.grpc.grpclb.GrpclbLoadBalancer.stateInfo");
-  private static final PickResult THROTTLED_RESULT =
+  @VisibleForTesting
+  static final PickResult THROTTLED_RESULT =
       PickResult.withError(Status.UNAVAILABLE.withDescription("Throttled by LB"));
 
   // All states in this class are mutated ONLY from Channel Executor
@@ -163,6 +164,9 @@ class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
     }
     if (newState.getState() == SHUTDOWN || !(subchannels.values().contains(subchannel))) {
       return;
+    }
+    if (newState.getState() == IDLE) {
+      subchannel.requestConnection();
     }
     subchannel.getAttributes().get(STATE_INFO).set(newState);
     helper.updatePicker(getPickerForRoundRobin());
@@ -375,7 +379,9 @@ class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
                 .set(STATE_INFO, new AtomicReference<ConnectivityStateInfo>(
                         ConnectivityStateInfo.forNonError(IDLE)))
                 .build();
-            newSubchannelMap.put(eag, helper.createSubchannel(eag, subchannelAttrs));
+            Subchannel subchannel = helper.createSubchannel(eag, subchannelAttrs);
+            subchannel.requestConnection();
+            newSubchannelMap.put(eag, subchannel);
           }
           newRoundRobinList.add(eag);
         }

@@ -32,7 +32,10 @@
 package io.grpc.grpclb;
 
 import static com.google.common.base.Charsets.UTF_8;
+import static io.grpc.ConnectivityState.CONNECTING;
+import static io.grpc.ConnectivityState.IDLE;
 import static io.grpc.ConnectivityState.READY;
+import static io.grpc.ConnectivityState.SHUTDOWN;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
@@ -475,6 +478,128 @@ public class GrpclbLoadBalancer2Test {
 
   @Test
   public void grpclbWorking() {
+    InOrder inOrder = inOrder(helper);
+    List<ResolvedServerInfoGroup> grpclbResolutionList =
+        createResolvedServerInfoGroupList(true, true);
+    Attributes grpclbResolutionAttrs = Attributes.newBuilder()
+        .set(GrpclbConstants.ATTR_LB_POLICY, LbPolicy.GRPCLB).build();
+    balancer.handleResolvedAddresses(grpclbResolutionList, grpclbResolutionAttrs);
+
+    assertSame(LbPolicy.GRPCLB, balancer.getLbPolicy());
+    assertNull(balancer.getDelegate());
+    verify(helper).createOobChannel(eq(grpclbResolutionList.get(0).toEquivalentAddressGroup()),
+        eq("lb0.google.com"), same(executor));
+    assertEquals(1, fakeOobChannels.size());
+    ManagedChannel oobChannel = fakeOobChannels.poll();
+    verify(mockLbService).balanceLoad(lbResponseObserverCaptor.capture());
+    StreamObserver<LoadBalanceResponse> lbResponseObserver = lbResponseObserverCaptor.getValue();
+
+    // Simulate receiving LB response
+    List<InetSocketAddress> backends1 = Arrays.asList(
+        new InetSocketAddress("127.0.0.1", 2000),
+        new InetSocketAddress("127.0.0.1", 2010));
+    inOrder.verify(helper, never()).updatePicker(any(SubchannelPicker.class));
+    lbResponseObserver.onNext(buildInitialResponse());
+    lbResponseObserver.onNext(buildLbResponse(backends1));
+
+    inOrder.verify(helper).createSubchannel(
+        eq(new EquivalentAddressGroup(backends1.get(0))), any(Attributes.class));
+    inOrder.verify(helper).createSubchannel(
+        eq(new EquivalentAddressGroup(backends1.get(1))), any(Attributes.class));
+    assertEquals(2, mockSubchannels.size());
+    Subchannel subchannel1 = mockSubchannels.poll();
+    Subchannel subchannel2 = mockSubchannels.poll();
+    verify(subchannel1).requestConnection();
+    verify(subchannel2).requestConnection();
+    assertEquals(new EquivalentAddressGroup(backends1.get(0)), subchannel1.getAddresses());
+    assertEquals(new EquivalentAddressGroup(backends1.get(1)), subchannel2.getAddresses());
+
+    // Before any subchannel is READY, a buffer picker will be provided
+    inOrder.verify(helper).updatePicker(same(GrpclbLoadBalancer2.BUFFER_PICKER));
+
+    balancer.handleSubchannelState(subchannel1, ConnectivityStateInfo.forNonError(CONNECTING));
+    balancer.handleSubchannelState(subchannel2, ConnectivityStateInfo.forNonError(CONNECTING));
+    inOrder.verify(helper, times(2)).updatePicker(same(GrpclbLoadBalancer2.BUFFER_PICKER));
+
+    // Let subchannels be connected
+    balancer.handleSubchannelState(subchannel2, ConnectivityStateInfo.forNonError(READY));
+    inOrder.verify(helper).updatePicker(pickerCaptor.capture());
+    RoundRobinPicker picker1 = (RoundRobinPicker) pickerCaptor.getValue();
+    assertRoundRobinList(picker1, subchannel2);
+
+    balancer.handleSubchannelState(subchannel1, ConnectivityStateInfo.forNonError(READY));
+    inOrder.verify(helper).updatePicker(pickerCaptor.capture());
+    RoundRobinPicker picker2 = (RoundRobinPicker) pickerCaptor.getValue();
+    assertRoundRobinList(picker2, subchannel1, subchannel2);
+
+    // Disconnected subchannels
+    verify(subchannel1).requestConnection();
+    balancer.handleSubchannelState(subchannel1, ConnectivityStateInfo.forNonError(IDLE));
+    verify(subchannel1, times(2)).requestConnection();
+    inOrder.verify(helper).updatePicker(pickerCaptor.capture());
+    RoundRobinPicker picker3 = (RoundRobinPicker) pickerCaptor.getValue();
+    assertRoundRobinList(picker3, subchannel2);
+
+    balancer.handleSubchannelState(subchannel1, ConnectivityStateInfo.forNonError(CONNECTING));
+    inOrder.verify(helper).updatePicker(pickerCaptor.capture());
+    RoundRobinPicker picker4 = (RoundRobinPicker) pickerCaptor.getValue();
+    assertRoundRobinList(picker4, subchannel2);
+
+    // As long as there is at least one READY subchannel, round robin will work.
+    Status error1 = Status.UNAVAILABLE.withDescription("error1");
+    balancer.handleSubchannelState(subchannel1, ConnectivityStateInfo.forTransientFailure(error1));
+    inOrder.verify(helper).updatePicker(pickerCaptor.capture());
+    RoundRobinPicker picker5 = (RoundRobinPicker) pickerCaptor.getValue();
+    assertRoundRobinList(picker5, subchannel2);
+
+    // If no subchannel is READY, will propagate an error from an arbitrary subchannel (but here
+    // only subchannel1 has error).
+    verify(subchannel2).requestConnection();
+    balancer.handleSubchannelState(subchannel2, ConnectivityStateInfo.forNonError(IDLE));
+    verify(subchannel2, times(2)).requestConnection();
+    inOrder.verify(helper).updatePicker(pickerCaptor.capture());
+    ErrorPicker picker6 = (ErrorPicker) pickerCaptor.getValue();
+    assertNull(picker6.result.getSubchannel());
+    assertSame(error1, picker6.result.getStatus());
+
+    // Update backends, with a drop entry
+    List<InetSocketAddress> backends2 = Arrays.asList(
+        new InetSocketAddress("127.0.0.1", 2030), null);
+    verify(subchannel1, never()).shutdown();
+    verify(subchannel2, never()).shutdown();
+
+    lbResponseObserver.onNext(buildLbResponse(backends2));
+    verify(subchannel1).shutdown();
+    verify(subchannel2).shutdown();
+
+    inOrder.verify(helper).createSubchannel(
+        eq(new EquivalentAddressGroup(backends2.get(0))), any(Attributes.class));
+    assertEquals(1, mockSubchannels.size());
+    Subchannel subchannel3 = mockSubchannels.poll();
+    verify(subchannel3).requestConnection();
+    assertEquals(new EquivalentAddressGroup(backends2.get(0)), subchannel3.getAddresses());
+    inOrder.verify(helper).updatePicker(pickerCaptor.capture());
+    RoundRobinPicker picker7 = (RoundRobinPicker) pickerCaptor.getValue();
+    assertRoundRobinList(picker7, (Subchannel) null);
+
+    // State updates on obsolete subchannels will have no effect
+    balancer.handleSubchannelState(subchannel1, ConnectivityStateInfo.forNonError(READY));
+    balancer.handleSubchannelState(subchannel1, ConnectivityStateInfo.forNonError(SHUTDOWN));
+    balancer.handleSubchannelState(subchannel2, ConnectivityStateInfo.forNonError(SHUTDOWN));
+    inOrder.verifyNoMoreInteractions();
+
+    balancer.handleSubchannelState(subchannel3, ConnectivityStateInfo.forNonError(READY));
+    inOrder.verify(helper).updatePicker(pickerCaptor.capture());
+    RoundRobinPicker picker8 = (RoundRobinPicker) pickerCaptor.getValue();
+    assertRoundRobinList(picker8, subchannel3, null);
+
+    verify(subchannel3, never()).shutdown();
+    assertFalse(oobChannel.isShutdown());
+    verify(lbRequestObserver, never()).onCompleted();
+    balancer.shutdown();
+    verify(subchannel3).shutdown();
+    assertTrue(oobChannel.isShutdown());
+    verify(lbRequestObserver).onCompleted();
   }
 
   @Test
@@ -510,14 +635,32 @@ public class GrpclbLoadBalancer2Test {
   private static LoadBalanceResponse buildLbResponse(List<InetSocketAddress> addrs) {
     ServerList.Builder serverListBuilder = ServerList.newBuilder();
     for (InetSocketAddress addr : addrs) {
-      serverListBuilder.addServers(Server.newBuilder()
-          .setIpAddress(ByteString.copyFrom(addr.getAddress().getAddress()))
-          .setPort(addr.getPort())
-          .build());
+      if (addr != null) {
+        serverListBuilder.addServers(Server.newBuilder()
+            .setIpAddress(ByteString.copyFrom(addr.getAddress().getAddress()))
+            .setPort(addr.getPort())
+            .build());
+      } else {
+        serverListBuilder.addServers(Server.newBuilder().setDropRequest(true).build());
+      }
     }
     return LoadBalanceResponse.newBuilder()
         .setServerList(serverListBuilder.build())
         .build();
+  }
+
+  private static void assertRoundRobinList(RoundRobinPicker picker, Subchannel ... subchannels) {
+    assertEquals(subchannels.length, picker.list.size());
+    for (int i = 0; i < subchannels.length; i++) {
+      Subchannel subchannel = subchannels[i];
+      if (subchannel == null) {
+        assertSame("list[" + i + "] should be drop",
+            GrpclbLoadBalancer2.THROTTLED_RESULT, picker.list.get(i));
+      } else {
+        assertEquals("list[" + i + "] should be Subchannel",
+            subchannel, picker.list.get(i).getSubchannel());
+      }
+    }
   }
 
   private static class FakeSocketAddress extends SocketAddress {
