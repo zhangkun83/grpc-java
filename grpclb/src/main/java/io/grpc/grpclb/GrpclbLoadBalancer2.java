@@ -156,10 +156,6 @@ class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
   public void handleResolvedAddresses(List<ResolvedServerInfoGroup> updatedServers,
       Attributes attributes) {
     LbPolicy newLbPolicy = attributes.get(GrpclbConstants.ATTR_LB_POLICY);
-    if (newLbPolicy == null) {
-      newLbPolicy = LbPolicy.PICK_FIRST;
-    }
-
     // LB addresses and backend addresses are treated separately
     List<LbAddressGroup> newLbAddressGroups = new ArrayList<LbAddressGroup>();
     List<ResolvedServerInfoGroup> newBackendServerInfoGroups =
