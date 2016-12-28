@@ -32,10 +32,15 @@
 package io.grpc.internal;
 
 public interface ObjectPool<T> {
+  /**
+   * Get an object from the pool.
+   */
   T getObject();
 
   /**
+   * Return the object to the pool.  The caller should not use the object beyond this point.
+   *
    * @return always {@code null}
    */
-  T returnObject(T object);
+  T returnObject(Object object);
 }

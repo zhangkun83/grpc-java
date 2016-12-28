@@ -45,8 +45,9 @@ public final class SharedResourcePool<T> implements ObjectPool<T> {
   }
 
   @Override
-  public T returnObject(T object) {
-    SharedResourceHolder.release(resource, object);
+  @SuppressWarnings("unchecked")
+  public T returnObject(Object object) {
+    SharedResourceHolder.release(resource, (T) object);
     return null;
   }
 }
