@@ -143,8 +143,8 @@ public class GrpclbLoadBalancer2Test {
   private LoadBalancerGrpc.LoadBalancerImplBase mockLbService;
   @Captor
   private ArgumentCaptor<StreamObserver<LoadBalanceResponse>> lbResponseObserverCaptor;
-  @Mock
-  private StreamObserver<LoadBalanceRequest> lbRequestObserver;
+  private final LinkedList<StreamObserver<LoadBalanceRequest>> lbRequestObservers =
+      new LinkedList<StreamObserver<LoadBalanceRequest>>();
   private final LinkedList<Subchannel> mockSubchannels = new LinkedList<Subchannel>();
   private final LinkedList<ManagedChannel> fakeOobChannels = new LinkedList<ManagedChannel>();
   private final ArrayList<Subchannel> subchannelTracker = new ArrayList<Subchannel>();
@@ -176,7 +176,23 @@ public class GrpclbLoadBalancer2Test {
         .thenReturn(pickFirstBalancer);
     when(roundRobinBalancerFactory.newLoadBalancer(any(Helper.class)))
         .thenReturn(roundRobinBalancer);
-    when(mockLbService.balanceLoad(any(StreamObserver.class))).thenReturn(lbRequestObserver);
+    doAnswer(new Answer<StreamObserver<LoadBalanceRequest>>() {
+        @Override
+        public StreamObserver<LoadBalanceRequest> answer(InvocationOnMock invocation) {
+          final StreamObserver<?> responseObserver = (StreamObserver<?>) invocation.getArguments()[0];
+          StreamObserver<LoadBalanceRequest> requestObserver =
+              (StreamObserver<LoadBalanceRequest>) mock(StreamObserver.class);
+          doAnswer(new Answer<Void>() {
+              @Override
+              public Void answer(InvocationOnMock invocation) {
+                responseObserver.onCompleted();
+                return null;
+              }
+            }).when(requestObserver).onCompleted();
+          lbRequestObservers.add(requestObserver);
+          return requestObserver;
+        }
+      }).when(mockLbService).balanceLoad(any(StreamObserver.class));
     fakeLbServer = InProcessServerBuilder.forName("fakeLb")
         .directExecutor().addService(mockLbService).build().start();
     doAnswer(new Answer<ManagedChannel>() {
@@ -230,16 +246,23 @@ public class GrpclbLoadBalancer2Test {
 
   @After
   public void tearDown() {
-    if (balancer != null) {
-      balancer.shutdown();
+    try {
+      if (balancer != null) {
+        balancer.shutdown();
+      }
+      for (ManagedChannel channel : oobChannelTracker) {
+        assertTrue(channel + " is shutdown", channel.isShutdown());
+        // balancer should have closed the LB stream, terminating the OOB channel.
+        assertTrue(channel + " is terminated", channel.isTerminated());
+      }
+      for (Subchannel subchannel: subchannelTracker) {
+        verify(subchannel).shutdown();
+      }
+    } finally {
+      if (fakeLbServer != null) {
+        fakeLbServer.shutdownNow();
+      }
     }
-    for (ManagedChannel channel : oobChannelTracker) {
-      assertTrue(channel + " is shutdown", channel.isShutdown());
-    }
-    for (Subchannel subchannel: subchannelTracker) {
-      verify(subchannel).shutdown();
-    }
-    fakeLbServer.shutdownNow();
   }
 
   @Test
@@ -423,6 +446,8 @@ public class GrpclbLoadBalancer2Test {
     verify(pickFirstBalancerFactory, never()).newLoadBalancer(any(Helper.class));
     verify(mockLbService).balanceLoad(lbResponseObserverCaptor.capture());
     StreamObserver<LoadBalanceResponse> lbResponseObserver = lbResponseObserverCaptor.getValue();
+    assertEquals(1, lbRequestObservers.size());
+    StreamObserver<LoadBalanceRequest> lbRequestObserver = lbRequestObservers.poll();
 
     verify(lbRequestObserver, never()).onCompleted();
     assertFalse(oobChannel.isShutdown());
@@ -607,7 +632,9 @@ public class GrpclbLoadBalancer2Test {
 
     verify(subchannel3, never()).shutdown();
     assertFalse(oobChannel.isShutdown());
-    verify(lbRequestObserver, never()).onCompleted();
+    assertEquals(1, lbRequestObservers.size());
+    verify(lbRequestObservers.peek(), never()).onCompleted();
+    verify(lbRequestObservers.peek(), never()).onError(any(Throwable.class));
   }
 
   @Test
@@ -635,10 +662,12 @@ public class GrpclbLoadBalancer2Test {
         eq(grpclbResolutionList.get(1).toEquivalentAddressGroup()),
         eq(lbAuthority(1)), same(executor));
     inOrder.verify(mockLbService).balanceLoad(lbResponseObserverCaptor.capture());
+    StreamObserver<LoadBalanceResponse> lbResponseObserver = lbResponseObserverCaptor.getValue();
+    assertEquals(1, lbRequestObservers.size());
+    lbRequestObservers.poll();
     assertEquals(1, fakeOobChannels.size());
     assertFalse(fakeOobChannels.peek().isShutdown());
 
-    StreamObserver<LoadBalanceResponse> lbResponseObserver = lbResponseObserverCaptor.getValue();
     Status error1 = Status.UNAVAILABLE.withDescription("error1");
     // Simulate that the stream on the second LB failed
     lbResponseObserver.onError(error1.asException());
@@ -655,6 +684,8 @@ public class GrpclbLoadBalancer2Test {
 
     inOrder.verify(mockLbService).balanceLoad(lbResponseObserverCaptor.capture());
     lbResponseObserver = lbResponseObserverCaptor.getValue();
+    assertEquals(1, lbRequestObservers.size());
+    lbRequestObservers.poll();
     assertEquals(1, fakeOobChannels.size());
     assertFalse(fakeOobChannels.peek().isShutdown());
 
@@ -676,11 +707,13 @@ public class GrpclbLoadBalancer2Test {
         eq(grpclbResolutionList.get(1).toEquivalentAddressGroup()),
         eq(lbAuthority(1)), same(executor));
     inOrder.verify(mockLbService).balanceLoad(lbResponseObserverCaptor.capture());
+    lbResponseObserver = lbResponseObserverCaptor.getValue();
+    assertEquals(1, lbRequestObservers.size());
+
     assertEquals(1, fakeOobChannels.size());
     assertFalse(fakeOobChannels.peek().isShutdown());
 
     // Finally it works.
-    lbResponseObserver = lbResponseObserverCaptor.getValue();
     lbResponseObserver.onNext(buildInitialResponse());
     List<InetSocketAddress> backends = Arrays.asList(
         new InetSocketAddress("127.0.0.1", 2000),
