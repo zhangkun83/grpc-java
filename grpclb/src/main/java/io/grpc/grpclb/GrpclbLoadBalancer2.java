@@ -51,7 +51,6 @@ import io.grpc.ResolvedServerInfoGroup;
 import io.grpc.Status;
 import io.grpc.grpclb.GrpclbConstants.LbPolicy;
 import io.grpc.internal.LogId;
-import io.grpc.internal.ObjectPool;
 import io.grpc.internal.WithLogId;
 import io.grpc.stub.StreamObserver;
 
@@ -64,7 +63,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map.Entry;
 import java.util.Map;
-import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -85,7 +83,6 @@ class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
 
   private final LogId logId = LogId.allocate(getClass().getName());
 
-  private final ObjectPool<Executor> executorPool;
   private final String serviceName;
   private final Helper helper;
   private final LoadBalancer2.Factory pickFirstBalancerFactory;
@@ -99,7 +96,6 @@ class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
 
   // All states in this class are mutated ONLY from Channel Executor
 
-  private Executor lbCommExecutor;
   private LoadBalancer2 delegate;
   private LbPolicy lbPolicy;
 
@@ -120,13 +116,10 @@ class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
   // A null element indicate a simulated error for throttling purpose
   private List<EquivalentAddressGroup> roundRobinList;
 
-  GrpclbLoadBalancer2(Helper helper, ObjectPool<Executor> executorPool,
-      LoadBalancer2.Factory pickFirstBalancerFactory,
+  GrpclbLoadBalancer2(Helper helper, LoadBalancer2.Factory pickFirstBalancerFactory,
       LoadBalancer2.Factory roundRobinBalancerFactory) {
     this.serviceName = helper.getAuthority();
     this.helper = helper;
-    this.executorPool = executorPool;
-    this.lbCommExecutor = executorPool.getObject();
     this.pickFirstBalancerFactory = pickFirstBalancerFactory;
     this.roundRobinBalancerFactory = roundRobinBalancerFactory;
   }
@@ -264,8 +257,7 @@ class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
     checkState(lbRequestWriter == null, "previous lbRequestWriter has not been cleared yet");
     checkState(lbResponseObserver == null, "previous lbResponseObserver has not been cleared yet");
     LbAddressGroup currentLb = lbAddressGroups.get(currentLbIndex); 
-    lbCommChannel = helper.createOobChannel(currentLb.getAddresses(), currentLb.getAuthority(),
-        lbCommExecutor);
+    lbCommChannel = helper.createOobChannel(currentLb.getAddresses(), currentLb.getAuthority());
     LoadBalancerGrpc.LoadBalancerStub stub = LoadBalancerGrpc.newStub(lbCommChannel);
     lbResponseObserver = new LbResponseObserver();
     lbRequestWriter = stub.balanceLoad(lbResponseObserver);
@@ -288,9 +280,6 @@ class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
   public void shutdown() {
     shutdownDelegate();
     shutdownLbComm();
-    if (lbCommExecutor != null) {
-      lbCommExecutor = executorPool.returnObject(lbCommExecutor);
-    }
     for (Subchannel subchannel : subchannels.values()) {
       subchannel.shutdown();
     }
