@@ -79,6 +79,7 @@ import io.grpc.grpclb.GrpclbLoadBalancer2.ErrorPicker;
 import io.grpc.grpclb.GrpclbLoadBalancer2.RoundRobinPicker;
 import io.grpc.inprocess.InProcessChannelBuilder;
 import io.grpc.inprocess.InProcessServerBuilder;
+import io.grpc.internal.ChannelExecutor;
 import io.grpc.internal.ObjectPool;
 import io.grpc.stub.ClientCalls;
 import io.grpc.stub.StreamObserver;
@@ -153,6 +154,7 @@ public class GrpclbLoadBalancer2Test {
   private io.grpc.Server fakeLbServer;
   @Captor
   private ArgumentCaptor<SubchannelPicker> pickerCaptor;
+  private final ChannelExecutor channelExecutor = new ChannelExecutor();
   private final FakeExecutor executor = new FakeExecutor();
   private final Metadata headers = new Metadata();
   @Mock
@@ -182,13 +184,14 @@ public class GrpclbLoadBalancer2Test {
           final StreamObserver<?> responseObserver = (StreamObserver<?>) invocation.getArguments()[0];
           StreamObserver<LoadBalanceRequest> requestObserver =
               (StreamObserver<LoadBalanceRequest>) mock(StreamObserver.class);
-          doAnswer(new Answer<Void>() {
+          Answer<Void> closeRpc = new Answer<Void>() {
               @Override
               public Void answer(InvocationOnMock invocation) {
                 responseObserver.onCompleted();
                 return null;
               }
-            }).when(requestObserver).onCompleted();
+            };
+          doAnswer(closeRpc).when(requestObserver).onCompleted();
           lbRequestObservers.add(requestObserver);
           return requestObserver;
         }
@@ -235,7 +238,7 @@ public class GrpclbLoadBalancer2Test {
         @Override
         public Void answer(InvocationOnMock invocation) throws Throwable {
           Runnable task = (Runnable) invocation.getArguments()[0];
-          task.run();
+          channelExecutor.executeLater(task).drain();
           return null;
         }
       }).when(helper).runSerialized(any(Runnable.class));
@@ -248,7 +251,12 @@ public class GrpclbLoadBalancer2Test {
   public void tearDown() {
     try {
       if (balancer != null) {
-        balancer.shutdown();
+        channelExecutor.executeLater(new Runnable() {
+            @Override
+            public void run() {
+              balancer.shutdown();
+            }
+          }).drain();
       }
       for (ManagedChannel channel : oobChannelTracker) {
         assertTrue(channel + " is shutdown", channel.isShutdown());
@@ -292,7 +300,7 @@ public class GrpclbLoadBalancer2Test {
   @Test
   public void nameResolutionFailsThenRecoverToDelegate() {
     Status error = Status.NOT_FOUND.withDescription("www.google.com not found");
-    balancer.handleNameResolutionError(error);
+    deliverNameResolutionError(error);
     verify(helper).updatePicker(pickerCaptor.capture());
     ErrorPicker errorPicker = (ErrorPicker) pickerCaptor.getValue();
     assertSame(error, errorPicker.result.getStatus());
@@ -302,7 +310,7 @@ public class GrpclbLoadBalancer2Test {
     EquivalentAddressGroup eag = resolvedServers.get(0).toEquivalentAddressGroup();
 
     Attributes resolutionAttrs = Attributes.newBuilder().set(RESOLUTION_ATTR, "yeah").build();
-    balancer.handleResolvedAddresses(resolvedServers, resolutionAttrs);
+    deliverResolvedAddresses(resolvedServers, resolutionAttrs);
 
     verify(pickFirstBalancerFactory).newLoadBalancer(helper);
     verify(pickFirstBalancer).handleResolvedAddresses(eq(resolvedServers), eq(resolutionAttrs));
@@ -313,7 +321,7 @@ public class GrpclbLoadBalancer2Test {
   @Test
   public void nameResolutionFailsThenRecoverToGrpclb() {
     Status error = Status.NOT_FOUND.withDescription("www.google.com not found");
-    balancer.handleNameResolutionError(error);
+    deliverNameResolutionError(error);
     verify(helper).updatePicker(pickerCaptor.capture());
     ErrorPicker errorPicker = (ErrorPicker) pickerCaptor.getValue();
     assertSame(error, errorPicker.result.getStatus());
@@ -324,7 +332,7 @@ public class GrpclbLoadBalancer2Test {
 
     Attributes resolutionAttrs = Attributes.newBuilder()
         .set(GrpclbConstants.ATTR_LB_POLICY, LbPolicy.GRPCLB).build();
-    balancer.handleResolvedAddresses(resolvedServers, resolutionAttrs);
+    deliverResolvedAddresses(resolvedServers, resolutionAttrs);
 
     assertSame(LbPolicy.GRPCLB, balancer.getLbPolicy());
     assertNull(balancer.getDelegate());
@@ -342,14 +350,14 @@ public class GrpclbLoadBalancer2Test {
     List<ResolvedServerInfoGroup> resolvedServers = createResolvedServerInfoGroupList(false);
 
     Attributes resolutionAttrs = Attributes.newBuilder().set(RESOLUTION_ATTR, "yeah").build();
-    balancer.handleResolvedAddresses(resolvedServers, resolutionAttrs);
+    deliverResolvedAddresses(resolvedServers, resolutionAttrs);
 
     verify(pickFirstBalancerFactory).newLoadBalancer(helper);
     verify(pickFirstBalancer).handleResolvedAddresses(eq(resolvedServers), eq(resolutionAttrs));
 
     // Then let name resolution fail.  The error will be passed directly to the delegate.
     Status error = Status.NOT_FOUND.withDescription("www.google.com not found");
-    balancer.handleNameResolutionError(error);
+    deliverNameResolutionError(error);
     verify(pickFirstBalancer).handleNameResolutionError(error);
     verify(helper, never()).updatePicker(any(SubchannelPicker.class));
     verifyNoMoreInteractions(roundRobinBalancerFactory);
@@ -364,14 +372,14 @@ public class GrpclbLoadBalancer2Test {
         .set(RESOLUTION_ATTR, "yeah")
         .set(GrpclbConstants.ATTR_LB_POLICY, LbPolicy.ROUND_ROBIN)
         .build();
-    balancer.handleResolvedAddresses(resolvedServers, resolutionAttrs);
+    deliverResolvedAddresses(resolvedServers, resolutionAttrs);
 
     verify(roundRobinBalancerFactory).newLoadBalancer(helper);
     verify(roundRobinBalancer).handleResolvedAddresses(resolvedServers, resolutionAttrs);
 
     // Then let name resolution fail.  The error will be passed directly to the delegate.
     Status error = Status.NOT_FOUND.withDescription("www.google.com not found");
-    balancer.handleNameResolutionError(error);
+    deliverNameResolutionError(error);
     verify(roundRobinBalancer).handleNameResolutionError(error);
     verify(helper, never()).updatePicker(any(SubchannelPicker.class));
     verifyNoMoreInteractions(pickFirstBalancerFactory);
@@ -386,7 +394,7 @@ public class GrpclbLoadBalancer2Test {
         createResolvedServerInfoGroupList(true, true);
     Attributes grpclbResolutionAttrs = Attributes.newBuilder()
         .set(GrpclbConstants.ATTR_LB_POLICY, LbPolicy.GRPCLB).build();
-    balancer.handleResolvedAddresses(grpclbResolutionList, grpclbResolutionAttrs);
+    deliverResolvedAddresses(grpclbResolutionList, grpclbResolutionAttrs);
 
     assertSame(LbPolicy.GRPCLB, balancer.getLbPolicy());
     assertNull(balancer.getDelegate());
@@ -399,7 +407,7 @@ public class GrpclbLoadBalancer2Test {
 
     // Let name resolution fail before round-robin list is ready
     Status error = Status.NOT_FOUND.withDescription("www.google.com not found");
-    balancer.handleNameResolutionError(error);
+    deliverNameResolutionError(error);
 
     inOrder.verify(helper).updatePicker(pickerCaptor.capture());
     ErrorPicker errorPicker = (ErrorPicker) pickerCaptor.getValue();
@@ -428,7 +436,7 @@ public class GrpclbLoadBalancer2Test {
         createResolvedServerInfoGroupList(true, false, true);
     Attributes grpclbResolutionAttrs = Attributes.newBuilder()
         .set(GrpclbConstants.ATTR_LB_POLICY, LbPolicy.GRPCLB).build();
-    balancer.handleResolvedAddresses(grpclbResolutionList, grpclbResolutionAttrs);
+    deliverResolvedAddresses(grpclbResolutionList, grpclbResolutionAttrs);
 
     assertSame(LbPolicy.GRPCLB, balancer.getLbPolicy());
     assertNull(balancer.getDelegate());
@@ -451,7 +459,7 @@ public class GrpclbLoadBalancer2Test {
 
     verify(lbRequestObserver, never()).onCompleted();
     assertFalse(oobChannel.isShutdown());
-    balancer.handleResolvedAddresses(pickFirstResolutionList, pickFirstResolutionAttrs);
+    deliverResolvedAddresses(pickFirstResolutionList, pickFirstResolutionAttrs);
 
     verify(pickFirstBalancerFactory).newLoadBalancer(same(helper));
     // Only non-LB addresses are passed to the delegate
@@ -469,7 +477,7 @@ public class GrpclbLoadBalancer2Test {
     Attributes roundRobinResolutionAttrs = Attributes.newBuilder()
         .set(GrpclbConstants.ATTR_LB_POLICY, LbPolicy.ROUND_ROBIN).build();
     verify(roundRobinBalancerFactory, never()).newLoadBalancer(any(Helper.class));
-    balancer.handleResolvedAddresses(roundRobinResolutionList, roundRobinResolutionAttrs);
+    deliverResolvedAddresses(roundRobinResolutionList, roundRobinResolutionAttrs);
 
     verify(roundRobinBalancerFactory).newLoadBalancer(same(helper));
     // Only non-LB addresses are passed to the delegate
@@ -483,7 +491,7 @@ public class GrpclbLoadBalancer2Test {
     grpclbResolutionList = createResolvedServerInfoGroupList(true, true, true);
     grpclbResolutionAttrs = Attributes.newBuilder()
         .set(GrpclbConstants.ATTR_LB_POLICY, LbPolicy.PICK_FIRST).build();
-    balancer.handleResolvedAddresses(grpclbResolutionList, grpclbResolutionAttrs);
+    deliverResolvedAddresses(grpclbResolutionList, grpclbResolutionAttrs);
 
     assertSame(LbPolicy.GRPCLB, balancer.getLbPolicy());
     assertNull(balancer.getDelegate());
@@ -501,7 +509,7 @@ public class GrpclbLoadBalancer2Test {
     pickFirstResolutionAttrs = Attributes.EMPTY;
     verify(pickFirstBalancerFactory).newLoadBalancer(any(Helper.class));
     assertFalse(oobChannel.isShutdown());
-    balancer.handleResolvedAddresses(pickFirstResolutionList, pickFirstResolutionAttrs);
+    deliverResolvedAddresses(pickFirstResolutionList, pickFirstResolutionAttrs);
 
     verify(pickFirstBalancerFactory, times(2)).newLoadBalancer(same(helper));
     // Only non-LB addresses are passed to the delegate
@@ -520,7 +528,7 @@ public class GrpclbLoadBalancer2Test {
         createResolvedServerInfoGroupList(true, true);
     Attributes grpclbResolutionAttrs = Attributes.newBuilder()
         .set(GrpclbConstants.ATTR_LB_POLICY, LbPolicy.GRPCLB).build();
-    balancer.handleResolvedAddresses(grpclbResolutionList, grpclbResolutionAttrs);
+    deliverResolvedAddresses(grpclbResolutionList, grpclbResolutionAttrs);
 
     assertSame(LbPolicy.GRPCLB, balancer.getLbPolicy());
     assertNull(balancer.getDelegate());
@@ -554,37 +562,37 @@ public class GrpclbLoadBalancer2Test {
     // Before any subchannel is READY, a buffer picker will be provided
     inOrder.verify(helper).updatePicker(same(GrpclbLoadBalancer2.BUFFER_PICKER));
 
-    balancer.handleSubchannelState(subchannel1, ConnectivityStateInfo.forNonError(CONNECTING));
-    balancer.handleSubchannelState(subchannel2, ConnectivityStateInfo.forNonError(CONNECTING));
+    deliverSubchannelState(subchannel1, ConnectivityStateInfo.forNonError(CONNECTING));
+    deliverSubchannelState(subchannel2, ConnectivityStateInfo.forNonError(CONNECTING));
     inOrder.verify(helper, times(2)).updatePicker(same(GrpclbLoadBalancer2.BUFFER_PICKER));
 
     // Let subchannels be connected
-    balancer.handleSubchannelState(subchannel2, ConnectivityStateInfo.forNonError(READY));
+    deliverSubchannelState(subchannel2, ConnectivityStateInfo.forNonError(READY));
     inOrder.verify(helper).updatePicker(pickerCaptor.capture());
     RoundRobinPicker picker1 = (RoundRobinPicker) pickerCaptor.getValue();
     assertRoundRobinList(picker1, subchannel2);
 
-    balancer.handleSubchannelState(subchannel1, ConnectivityStateInfo.forNonError(READY));
+    deliverSubchannelState(subchannel1, ConnectivityStateInfo.forNonError(READY));
     inOrder.verify(helper).updatePicker(pickerCaptor.capture());
     RoundRobinPicker picker2 = (RoundRobinPicker) pickerCaptor.getValue();
     assertRoundRobinList(picker2, subchannel1, subchannel2);
 
     // Disconnected subchannels
     verify(subchannel1).requestConnection();
-    balancer.handleSubchannelState(subchannel1, ConnectivityStateInfo.forNonError(IDLE));
+    deliverSubchannelState(subchannel1, ConnectivityStateInfo.forNonError(IDLE));
     verify(subchannel1, times(2)).requestConnection();
     inOrder.verify(helper).updatePicker(pickerCaptor.capture());
     RoundRobinPicker picker3 = (RoundRobinPicker) pickerCaptor.getValue();
     assertRoundRobinList(picker3, subchannel2);
 
-    balancer.handleSubchannelState(subchannel1, ConnectivityStateInfo.forNonError(CONNECTING));
+    deliverSubchannelState(subchannel1, ConnectivityStateInfo.forNonError(CONNECTING));
     inOrder.verify(helper).updatePicker(pickerCaptor.capture());
     RoundRobinPicker picker4 = (RoundRobinPicker) pickerCaptor.getValue();
     assertRoundRobinList(picker4, subchannel2);
 
     // As long as there is at least one READY subchannel, round robin will work.
     Status error1 = Status.UNAVAILABLE.withDescription("error1");
-    balancer.handleSubchannelState(subchannel1, ConnectivityStateInfo.forTransientFailure(error1));
+    deliverSubchannelState(subchannel1, ConnectivityStateInfo.forTransientFailure(error1));
     inOrder.verify(helper).updatePicker(pickerCaptor.capture());
     RoundRobinPicker picker5 = (RoundRobinPicker) pickerCaptor.getValue();
     assertRoundRobinList(picker5, subchannel2);
@@ -592,7 +600,7 @@ public class GrpclbLoadBalancer2Test {
     // If no subchannel is READY, will propagate an error from an arbitrary subchannel (but here
     // only subchannel1 has error).
     verify(subchannel2).requestConnection();
-    balancer.handleSubchannelState(subchannel2, ConnectivityStateInfo.forNonError(IDLE));
+    deliverSubchannelState(subchannel2, ConnectivityStateInfo.forNonError(IDLE));
     verify(subchannel2, times(2)).requestConnection();
     inOrder.verify(helper).updatePicker(pickerCaptor.capture());
     ErrorPicker picker6 = (ErrorPicker) pickerCaptor.getValue();
@@ -620,12 +628,12 @@ public class GrpclbLoadBalancer2Test {
     assertRoundRobinList(picker7, (Subchannel) null);
 
     // State updates on obsolete subchannels will have no effect
-    balancer.handleSubchannelState(subchannel1, ConnectivityStateInfo.forNonError(READY));
-    balancer.handleSubchannelState(subchannel1, ConnectivityStateInfo.forNonError(SHUTDOWN));
-    balancer.handleSubchannelState(subchannel2, ConnectivityStateInfo.forNonError(SHUTDOWN));
+    deliverSubchannelState(subchannel1, ConnectivityStateInfo.forNonError(READY));
+    deliverSubchannelState(subchannel1, ConnectivityStateInfo.forNonError(SHUTDOWN));
+    deliverSubchannelState(subchannel2, ConnectivityStateInfo.forNonError(SHUTDOWN));
     inOrder.verifyNoMoreInteractions();
 
-    balancer.handleSubchannelState(subchannel3, ConnectivityStateInfo.forNonError(READY));
+    deliverSubchannelState(subchannel3, ConnectivityStateInfo.forNonError(READY));
     inOrder.verify(helper).updatePicker(pickerCaptor.capture());
     RoundRobinPicker picker8 = (RoundRobinPicker) pickerCaptor.getValue();
     assertRoundRobinList(picker8, subchannel3, null);
@@ -647,7 +655,7 @@ public class GrpclbLoadBalancer2Test {
 
     Attributes grpclbResolutionAttrs = Attributes.newBuilder()
         .set(GrpclbConstants.ATTR_LB_POLICY, LbPolicy.GRPCLB).build();
-    balancer.handleResolvedAddresses(grpclbResolutionList, grpclbResolutionAttrs);
+    deliverResolvedAddresses(grpclbResolutionList, grpclbResolutionAttrs);
 
     // First LB addr fails to connect
     inOrder.verify(helper).createOobChannel(
@@ -727,7 +735,36 @@ public class GrpclbLoadBalancer2Test {
     inOrder.verifyNoMoreInteractions();
   }
 
-  private List<ResolvedServerInfoGroup> createResolvedServerInfoGroupList(boolean ... isLb) {
+  private void deliverSubchannelState(
+      final Subchannel subchannel, final ConnectivityStateInfo newState) {
+    channelExecutor.executeLater(new Runnable() {
+        @Override
+        public void run() {
+          balancer.handleSubchannelState(subchannel, newState);
+        }
+      }).drain();
+  }
+
+  private void deliverNameResolutionError(final Status error) {
+    channelExecutor.executeLater(new Runnable() {
+        @Override
+        public void run() {
+          balancer.handleNameResolutionError(error);
+        }
+      }).drain();
+  }
+
+  private void deliverResolvedAddresses(
+      final List<ResolvedServerInfoGroup> addrs, final Attributes attrs) {
+    channelExecutor.executeLater(new Runnable() {
+        @Override
+        public void run() {
+          balancer.handleResolvedAddresses(addrs, attrs);
+        }
+      }).drain();
+  }
+
+  private static List<ResolvedServerInfoGroup> createResolvedServerInfoGroupList(boolean ... isLb) {
     ArrayList<ResolvedServerInfoGroup> list = new ArrayList<ResolvedServerInfoGroup>();
     for (int i = 0; i < isLb.length; i++) {
       SocketAddress addr = new FakeSocketAddress("fake-address-" + i);

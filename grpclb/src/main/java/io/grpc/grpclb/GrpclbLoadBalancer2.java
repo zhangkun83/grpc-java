@@ -400,6 +400,7 @@ class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
       if (dismissed) {
         return;
       }
+      lbRequestWriter = null;
       handleGrpclbError(status);
       shutdownLbComm();
       currentLbIndex = (currentLbIndex + 1) % lbAddressGroups.size();
