@@ -104,7 +104,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.List;
-import java.util.concurrent.Executor;
 
 /** Unit tests for {@link GrpclbLoadBalancer2}. */
 @RunWith(JUnit4.class)
@@ -838,13 +837,6 @@ public class GrpclbLoadBalancer2Test {
     @Override
     public int hashCode() {
       return name.hashCode();
-    }
-  }
-
-  private static class FakeExecutor implements Executor {
-    @Override
-    public void execute(Runnable runnable) {
-      runnable.run();
     }
   }
 }
