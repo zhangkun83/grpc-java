@@ -43,6 +43,7 @@ import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.eq;
+import static org.mockito.Matchers.isA;
 import static org.mockito.Matchers.same;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.inOrder;
@@ -58,7 +59,6 @@ import com.google.protobuf.ByteString;
 
 import io.grpc.Attributes;
 import io.grpc.CallOptions;
-import io.grpc.ClientCall;
 import io.grpc.ConnectivityStateInfo;
 import io.grpc.EquivalentAddressGroup;
 import io.grpc.LoadBalancer2.Helper;
@@ -145,9 +145,11 @@ public class GrpclbLoadBalancer2Test {
   private ArgumentCaptor<StreamObserver<LoadBalanceResponse>> lbResponseObserverCaptor;
   @Mock
   private StreamObserver<LoadBalanceRequest> lbRequestObserver;
-  private LinkedList<Subchannel> mockSubchannels = new LinkedList<Subchannel>();
-  private LinkedList<ManagedChannel> fakeOobChannels = new LinkedList<ManagedChannel>();
-  private ArrayList<ManagedChannel> oobChannelTracker = new ArrayList<ManagedChannel>();
+  private final LinkedList<Subchannel> mockSubchannels = new LinkedList<Subchannel>();
+  private final LinkedList<ManagedChannel> fakeOobChannels = new LinkedList<ManagedChannel>();
+  private final ArrayList<Subchannel> subchannelTracker = new ArrayList<Subchannel>();
+  private final ArrayList<ManagedChannel> oobChannelTracker = new ArrayList<ManagedChannel>();
+  private final ArrayList<String> failingLbAuthorities = new ArrayList<String>();
   private io.grpc.Server fakeLbServer;
   @Captor
   private ArgumentCaptor<SubchannelPicker> pickerCaptor;
@@ -180,13 +182,19 @@ public class GrpclbLoadBalancer2Test {
     doAnswer(new Answer<ManagedChannel>() {
         @Override
         public ManagedChannel answer(InvocationOnMock invocation) throws Throwable {
-          ManagedChannel channel = InProcessChannelBuilder.forName("fakeLb")
-              .directExecutor().build();
-          // #2444: non-determinism of Channel due to starting NameResolver on the timer
-          // "Prime" it before use
+          String authority = (String) invocation.getArguments()[1];
+          ManagedChannel channel;
+          if (failingLbAuthorities.contains(authority)) {
+            channel = InProcessChannelBuilder.forName("nonExistFakeLb").directExecutor().build();
+          } else {
+            channel = InProcessChannelBuilder.forName("fakeLb").directExecutor().build();
+          }
+          // TODO(zhangkun83): #2444: non-determinism of Channel due to starting NameResolver on the
+          // timer "Prime" it before use.  Remove it after #2444 is resolved.
           try {
             ClientCalls.blockingUnaryCall(channel, TRASH_METHOD, CallOptions.DEFAULT, "trash");
           } catch (StatusRuntimeException ignored) {
+            // Ignored
           }
           fakeOobChannels.add(channel);
           oobChannelTracker.add(channel);
@@ -203,6 +211,7 @@ public class GrpclbLoadBalancer2Test {
           when(subchannel.getAddresses()).thenReturn(eag);
           when(subchannel.getAttributes()).thenReturn(attrs);
           mockSubchannels.add(subchannel);
+          subchannelTracker.add(subchannel);
           return subchannel;
         }
       }).when(helper).createSubchannel(any(EquivalentAddressGroup.class), any(Attributes.class));
@@ -225,7 +234,10 @@ public class GrpclbLoadBalancer2Test {
       balancer.shutdown();
     }
     for (ManagedChannel channel : oobChannelTracker) {
-      channel.shutdownNow();
+      assertTrue(channel + " is shutdown", channel.isShutdown());
+    }
+    for (Subchannel subchannel: subchannelTracker) {
+      verify(subchannel).shutdown();
     }
     fakeLbServer.shutdownNow();
   }
@@ -293,7 +305,7 @@ public class GrpclbLoadBalancer2Test {
 
     assertSame(LbPolicy.GRPCLB, balancer.getLbPolicy());
     assertNull(balancer.getDelegate());
-    verify(helper).createOobChannel(eq(eag), eq("lb0.google.com"), same(executor));
+    verify(helper).createOobChannel(eq(eag), eq(lbAuthority(0)), same(executor));
     verify(mockLbService).balanceLoad(lbResponseObserverCaptor.capture());
 
     verifyNoMoreInteractions(pickFirstBalancerFactory);
@@ -356,7 +368,7 @@ public class GrpclbLoadBalancer2Test {
     assertSame(LbPolicy.GRPCLB, balancer.getLbPolicy());
     assertNull(balancer.getDelegate());
     verify(helper).createOobChannel(eq(grpclbResolutionList.get(0).toEquivalentAddressGroup()),
-        eq("lb0.google.com"), same(executor));
+        eq(lbAuthority(0)), same(executor));
     assertEquals(1, fakeOobChannels.size());
     ManagedChannel oobChannel = fakeOobChannels.poll();
     verify(mockLbService).balanceLoad(lbResponseObserverCaptor.capture());
@@ -398,7 +410,7 @@ public class GrpclbLoadBalancer2Test {
     assertSame(LbPolicy.GRPCLB, balancer.getLbPolicy());
     assertNull(balancer.getDelegate());
     verify(helper).createOobChannel(eq(grpclbResolutionList.get(0).toEquivalentAddressGroup()),
-        eq("lb0.google.com"), same(executor));
+        eq(lbAuthority(0)), same(executor));
     assertEquals(1, fakeOobChannels.size());
     ManagedChannel oobChannel = fakeOobChannels.poll();
     verify(mockLbService).balanceLoad(lbResponseObserverCaptor.capture());
@@ -452,7 +464,7 @@ public class GrpclbLoadBalancer2Test {
     assertNull(balancer.getDelegate());
     verify(helper, times(2)).createOobChannel(
         eq(grpclbResolutionList.get(0).toEquivalentAddressGroup()),
-        eq("lb0.google.com"), same(executor));
+        eq(lbAuthority(0)), same(executor));
     verify(helper, times(2)).createOobChannel(any(EquivalentAddressGroup.class), any(String.class),
         any(Executor.class));
     assertEquals(1, fakeOobChannels.size());
@@ -488,7 +500,7 @@ public class GrpclbLoadBalancer2Test {
     assertSame(LbPolicy.GRPCLB, balancer.getLbPolicy());
     assertNull(balancer.getDelegate());
     verify(helper).createOobChannel(eq(grpclbResolutionList.get(0).toEquivalentAddressGroup()),
-        eq("lb0.google.com"), same(executor));
+        eq(lbAuthority(0)), same(executor));
     assertEquals(1, fakeOobChannels.size());
     ManagedChannel oobChannel = fakeOobChannels.poll();
     verify(mockLbService).balanceLoad(lbResponseObserverCaptor.capture());
@@ -596,18 +608,90 @@ public class GrpclbLoadBalancer2Test {
     verify(subchannel3, never()).shutdown();
     assertFalse(oobChannel.isShutdown());
     verify(lbRequestObserver, never()).onCompleted();
-    balancer.shutdown();
-    verify(subchannel3).shutdown();
-    assertTrue(oobChannel.isShutdown());
-    verify(lbRequestObserver).onCompleted();
   }
 
   @Test
-  public void grpclbFailedToConnect() {
-  }
+  public void grpclbBalanerCommErrors() {
+    InOrder inOrder = inOrder(helper, mockLbService);
+    // Make the first LB address fail to connect
+    failingLbAuthorities.add(lbAuthority(0));
+    List<ResolvedServerInfoGroup> grpclbResolutionList =
+        createResolvedServerInfoGroupList(true, true, true);
 
-  @Test
-  public void grpclbLbStreamFails() {
+    Attributes grpclbResolutionAttrs = Attributes.newBuilder()
+        .set(GrpclbConstants.ATTR_LB_POLICY, LbPolicy.GRPCLB).build();
+    balancer.handleResolvedAddresses(grpclbResolutionList, grpclbResolutionAttrs);
+
+    // First LB addr fails to connect
+    inOrder.verify(helper).createOobChannel(
+        eq(grpclbResolutionList.get(0).toEquivalentAddressGroup()),
+        eq(lbAuthority(0)), same(executor));
+    inOrder.verify(helper).updatePicker(isA(ErrorPicker.class));
+
+    assertEquals(2, fakeOobChannels.size());
+    assertTrue(fakeOobChannels.poll().isShutdown());
+    // Will move on to second LB addr
+    inOrder.verify(helper).createOobChannel(
+        eq(grpclbResolutionList.get(1).toEquivalentAddressGroup()),
+        eq(lbAuthority(1)), same(executor));
+    inOrder.verify(mockLbService).balanceLoad(lbResponseObserverCaptor.capture());
+    assertEquals(1, fakeOobChannels.size());
+    assertFalse(fakeOobChannels.peek().isShutdown());
+
+    StreamObserver<LoadBalanceResponse> lbResponseObserver = lbResponseObserverCaptor.getValue();
+    Status error1 = Status.UNAVAILABLE.withDescription("error1");
+    // Simulate that the stream on the second LB failed
+    lbResponseObserver.onError(error1.asException());
+    assertTrue(fakeOobChannels.poll().isShutdown());
+
+    inOrder.verify(helper).updatePicker(pickerCaptor.capture());
+    ErrorPicker errorPicker = (ErrorPicker) pickerCaptor.getValue();
+    assertEquals(error1.getCode(), errorPicker.result.getStatus().getCode());
+    assertTrue(errorPicker.result.getStatus().getDescription().contains(error1.getDescription()));
+    // Move on to the third LB.
+    inOrder.verify(helper).createOobChannel(
+        eq(grpclbResolutionList.get(2).toEquivalentAddressGroup()),
+        eq(lbAuthority(2)), same(executor));
+
+    inOrder.verify(mockLbService).balanceLoad(lbResponseObserverCaptor.capture());
+    lbResponseObserver = lbResponseObserverCaptor.getValue();
+    assertEquals(1, fakeOobChannels.size());
+    assertFalse(fakeOobChannels.peek().isShutdown());
+
+    // Simulate that the stream on the third LB closed without error.  It is treated
+    // as an error.
+    lbResponseObserver.onCompleted();
+    assertTrue(fakeOobChannels.poll().isShutdown());
+
+    // Loop back to the first LB addr, which still fails.
+    inOrder.verify(helper).createOobChannel(
+        eq(grpclbResolutionList.get(0).toEquivalentAddressGroup()),
+        eq(lbAuthority(0)), same(executor));
+    inOrder.verify(helper).updatePicker(isA(ErrorPicker.class));
+
+    assertEquals(2, fakeOobChannels.size());
+    assertTrue(fakeOobChannels.poll().isShutdown());
+    // Will move on to second LB addr
+    inOrder.verify(helper).createOobChannel(
+        eq(grpclbResolutionList.get(1).toEquivalentAddressGroup()),
+        eq(lbAuthority(1)), same(executor));
+    inOrder.verify(mockLbService).balanceLoad(lbResponseObserverCaptor.capture());
+    assertEquals(1, fakeOobChannels.size());
+    assertFalse(fakeOobChannels.peek().isShutdown());
+
+    // Finally it works.
+    lbResponseObserver = lbResponseObserverCaptor.getValue();
+    lbResponseObserver.onNext(buildInitialResponse());
+    List<InetSocketAddress> backends = Arrays.asList(
+        new InetSocketAddress("127.0.0.1", 2000),
+        new InetSocketAddress("127.0.0.1", 2010));
+    lbResponseObserver.onNext(buildLbResponse(backends));
+    inOrder.verify(helper).createSubchannel(
+        eq(new EquivalentAddressGroup(backends.get(0))), any(Attributes.class));
+    inOrder.verify(helper).createSubchannel(
+        eq(new EquivalentAddressGroup(backends.get(1))), any(Attributes.class));
+    inOrder.verify(helper).updatePicker(same(GrpclbLoadBalancer2.BUFFER_PICKER));
+    inOrder.verifyNoMoreInteractions();
   }
 
   private List<ResolvedServerInfoGroup> createResolvedServerInfoGroupList(boolean ... isLb) {
@@ -616,7 +700,7 @@ public class GrpclbLoadBalancer2Test {
       SocketAddress addr = new FakeSocketAddress("fake-address-" + i);
       ResolvedServerInfoGroup serverInfoGroup = ResolvedServerInfoGroup
           .builder(isLb[i] ? Attributes.newBuilder()
-              .set(GrpclbConstants.ATTR_LB_ADDR_AUTHORITY, "lb" + i + ".google.com")
+              .set(GrpclbConstants.ATTR_LB_ADDR_AUTHORITY, lbAuthority(i))
               .build()
               : Attributes.EMPTY)
           .add(new ResolvedServerInfo(addr))
@@ -624,6 +708,10 @@ public class GrpclbLoadBalancer2Test {
       list.add(serverInfoGroup);
     }
     return list;
+  }
+
+  private static String lbAuthority(int i) {
+    return "lb" + i + ".google.com";
   }
 
   private static LoadBalanceResponse buildInitialResponse() {

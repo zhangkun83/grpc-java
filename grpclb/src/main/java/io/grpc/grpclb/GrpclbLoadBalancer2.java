@@ -40,53 +40,34 @@ import static io.grpc.ConnectivityState.SHUTDOWN;
 import static io.grpc.ConnectivityState.TRANSIENT_FAILURE;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
-import com.google.common.base.Supplier;
-import com.google.common.base.Suppliers;
 
 import io.grpc.Attributes;
-import io.grpc.Channel;
 import io.grpc.ConnectivityStateInfo;
 import io.grpc.EquivalentAddressGroup;
 import io.grpc.LoadBalancer2;
-import io.grpc.LoadBalancer;
 import io.grpc.ManagedChannel;
 import io.grpc.Metadata;
-import io.grpc.PickFirstBalancerFactory2;
-import io.grpc.ResolvedServerInfo;
 import io.grpc.ResolvedServerInfoGroup;
 import io.grpc.Status;
-import io.grpc.TransportManager;
-import io.grpc.TransportManager.InterimTransport;
 import io.grpc.grpclb.GrpclbConstants.LbPolicy;
-import io.grpc.internal.GrpcUtil;
 import io.grpc.internal.LogId;
 import io.grpc.internal.ObjectPool;
-import io.grpc.internal.RoundRobinServerList;
-import io.grpc.internal.SharedResourceHolder;
 import io.grpc.internal.WithLogId;
 import io.grpc.stub.StreamObserver;
-import io.grpc.util.RoundRobinLoadBalancerFactory2;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.net.SocketAddress;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map.Entry;
 import java.util.Map;
 import java.util.concurrent.Executor;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 import java.util.logging.Logger;
-
-import javax.annotation.concurrent.GuardedBy;
 
 /**
  * A {@link LoadBalancer2} that uses the GRPCLB protocol.
@@ -119,7 +100,6 @@ class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
   // All states in this class are mutated ONLY from Channel Executor
 
   private Executor lbCommExecutor;
-  private Status lastError;
   private LoadBalancer2 delegate;
   private LbPolicy lbPolicy;
 
@@ -263,6 +243,8 @@ class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
           }
         }
         break;
+      default:
+        // Do nothing
     }
   }
 
@@ -320,7 +302,6 @@ class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
   }
 
   private void handleGrpclbError(Status status) {
-    lastError = status;
     if (roundRobinList == null || roundRobinList.isEmpty()) {
       helper.updatePicker(new ErrorPicker(status));
     }
@@ -385,11 +366,6 @@ class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
           }
           newRoundRobinList.add(eag);
         }
-      }
-      if (newRoundRobinList.isEmpty()) {
-        // initialResponse and serverList are under a oneof group. If initialResponse is set,
-        // serverList will be empty.
-        return;
       }
       // Close Subchannels whose addresses have been delisted
       for (Entry<EquivalentAddressGroup, Subchannel> entry : subchannels.entrySet()) {
@@ -475,7 +451,7 @@ class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
   }
 
   @VisibleForTesting
-  final static class ErrorPicker extends SubchannelPicker {
+  static final class ErrorPicker extends SubchannelPicker {
     final PickResult result;
 
     ErrorPicker(Status status) {
@@ -489,7 +465,7 @@ class GrpclbLoadBalancer2 extends LoadBalancer2 implements WithLogId {
   }
 
   @VisibleForTesting
-  final static class RoundRobinPicker extends SubchannelPicker {
+  static final class RoundRobinPicker extends SubchannelPicker {
     final List<PickResult> list;
     int index;
 
