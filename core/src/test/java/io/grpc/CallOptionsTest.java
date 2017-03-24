@@ -59,6 +59,8 @@ public class CallOptionsTest {
   private CallCredentials sampleCreds = mock(CallCredentials.class);
   private CallOptions.Key<String> option1 = CallOptions.Key.of("option1", "default");
   private CallOptions.Key<String> option2 = CallOptions.Key.of("option2", "default");
+  private ClientStreamTracerFactory tracerFactory1 = mock(ClientStreamTracerFactory.class);
+  private ClientStreamTracerFactory tracerFactory2 = mock(ClientStreamTracerFactory.class);
   private CallOptions allSet = CallOptions.DEFAULT
       .withAuthority(sampleAuthority)
       .withDeadline(sampleDeadline)
@@ -67,7 +69,9 @@ public class CallOptionsTest {
       .withWaitForReady()
       .withExecutor(directExecutor())
       .withOption(option1, "value1")
-      .withOption(option2, "value2");
+      .withStreamTracerFactory(tracerFactory1)
+      .withOption(option2, "value2")
+      .withStreamTracerFactory(tracerFactory2);
 
   @Test
   public void defaultsAreAllNull() {
@@ -77,6 +81,7 @@ public class CallOptionsTest {
     assertThat(CallOptions.DEFAULT.getCredentials()).isNull();
     assertThat(CallOptions.DEFAULT.getCompressor()).isNull();
     assertThat(CallOptions.DEFAULT.isWaitForReady()).isFalse();
+    assertThat(CallOptions.DEFAULT.getStreamTracerFactories()).isEmpty();
   }
 
   @Test
@@ -164,6 +169,7 @@ public class CallOptionsTest {
     assertThat(actual).contains("waitForReady=true");
     assertThat(actual).contains("maxInboundMessageSize=44");
     assertThat(actual).contains("maxOutboundMessageSize=55");
+    assertThat(actual).contains("streamTracerFactories=[]");
   }
 
   @Test
@@ -202,6 +208,34 @@ public class CallOptionsTest {
     assertThat(opts.getOption(option2)).isEqualTo("v2");
   }
 
+  @Test
+  public void withStreamTracerFactory() {
+    CallOptions opts1 = CallOptions.DEFAULT.withStreamTracerFactory(tracerFactory1);
+    CallOptions opts2 = opts1.withStreamTracerFactory(tracerFactory2);
+    CallOptions opts3 = opts2.withStreamTracerFactory(tracerFactory2);
+
+    assertThat(opts1.getStreamTracerFactories()).containsExactly(tracerFactory1);
+    assertThat(opts2.getStreamTracerFactories()).containsExactly(tracerFactory1, tracerFactory2)
+        .inOrder();
+    assertThat(opts3.getStreamTracerFactories())
+        .containsExactly(tracerFactory1, tracerFactory2, tracerFactory2).inOrder();
+
+    try {
+      CallOptions.DEFAULT.getStreamTracerFactories().add(tracerFactory1);
+      fail("Should have thrown. The list should be unmodifiable.");
+    } catch (UnsupportedOperationException e) {
+      // Expected
+    }
+
+    try {
+      opts2.getStreamTracerFactories().clear();
+      fail("Should have thrown. The list should be unmodifiable.");
+    } catch (UnsupportedOperationException e) {
+      // Expected
+    }
+  }
+
+  // Only used in noStrayModifications()
   // TODO(carl-mastrangelo): consider making a CallOptionsSubject for Truth.
   private static boolean equal(CallOptions o1, CallOptions o2) {
     return Objects.equal(o1.getDeadline(), o2.getDeadline())
