@@ -40,8 +40,10 @@ import com.google.instrumentation.stats.RpcConstants;
 import com.google.instrumentation.stats.StatsContext;
 import com.google.instrumentation.stats.StatsContextFactory;
 import com.google.instrumentation.stats.TagValue;
+import io.grpc.ClientStreamTracer;
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
+import io.grpc.ServerStreamTracer;
 import io.grpc.Status;
 import io.grpc.internal.testing.StatsTestUtils;
 import io.grpc.internal.testing.StatsTestUtils.FakeStatsContextFactory;
@@ -54,9 +56,11 @@ import org.junit.runners.JUnit4;
  * Test for {@link StatsTraceContext}.
  */
 @RunWith(JUnit4.class)
-public class StatsTraceContextTest {
-  private FakeClock fakeClock = new FakeClock();
-  private FakeStatsContextFactory statsCtxFactory = new FakeStatsContextFactory();
+public class CensusStreamTracerModuleTest {
+  private final FakeClock fakeClock = new FakeClock();
+  private final FakeStatsContextFactory statsCtxFactory = new FakeStatsContextFactory();
+  private final CensusStreamTracerModule census =
+      new CensusStreamTracerModule(statsCtxFactory, fakeClock.getStopwatchSupplier());
 
   @After
   public void allRecordsVerified() {
@@ -66,26 +70,31 @@ public class StatsTraceContextTest {
   @Test
   public void clientBasic() {
     String methodName = MethodDescriptor.generateFullMethodName("Service1", "method1");
-    StatsTraceContext ctx = StatsTraceContext.newClientContextForTesting(
-        methodName, statsCtxFactory, statsCtxFactory.getDefault(),
-        fakeClock.getStopwatchSupplier());
+    CensusStreamTracerModule.ClientFactory tracerFactory =
+        census.newClientFactory(statsCtxFactory.getDefault(), methodName);
+    Metadata headers = new Metadata();
+    ClientStreamTracer tracer = tracerFactory.newClientStreamTracer(headers);
+    // TODO(zhangkun83): verify that Census tags are propagated to headers
+
     fakeClock.forwardTime(30, MILLISECONDS);
-    ctx.clientHeadersSent();
+    tracer.headersSent();
 
     fakeClock.forwardTime(100, MILLISECONDS);
-    ctx.wireBytesSent(1028);
-    ctx.uncompressedBytesSent(1128);
+    tracer.outboundWireSize(1028);
+    tracer.outboundUncompressedSize(1128);
 
     fakeClock.forwardTime(16, MILLISECONDS);
-    ctx.wireBytesReceived(33);
-    ctx.uncompressedBytesReceived(67);
-    ctx.wireBytesSent(99);
-    ctx.uncompressedBytesSent(865);
+    tracer.inboundWireSize(33);
+    tracer.inboundUncompressedSize(67);
+    tracer.outboundWireSize(99);
+    tracer.outboundUncompressedSize(865);
 
     fakeClock.forwardTime(24, MILLISECONDS);
-    ctx.wireBytesReceived(154);
-    ctx.uncompressedBytesReceived(552);
-    ctx.callEnded(Status.OK);
+    tracer.inboundWireSize(154);
+    tracer.inboundUncompressedSize(552);
+    // TODO(zhangkun83): make sure streamClosed is called for client
+    tracer.streamClosed(Status.OK);
+    tracerFactory.callEnded(Status.OK);
 
     StatsTestUtils.MetricsRecord record = statsCtxFactory.pollRecord();
     assertNotNull(record);
@@ -110,11 +119,11 @@ public class StatsTraceContextTest {
   @Test
   public void clientNotSent() {
     String methodName = MethodDescriptor.generateFullMethodName("Service1", "method2");
-    StatsTraceContext ctx = StatsTraceContext.newClientContextForTesting(
-        methodName, statsCtxFactory, statsCtxFactory.getDefault(),
-        fakeClock.getStopwatchSupplier());
+    CensusStreamTracerModule.ClientFactory tracerFactory =
+        census.newClientFactory(statsCtxFactory.getDefault(), methodName);
+
     fakeClock.forwardTime(3000, MILLISECONDS);
-    ctx.callEnded(Status.DEADLINE_EXCEEDED.withDescription("3 seconds"));
+    tracerFactory.callEnded(Status.DEADLINE_EXCEEDED.withDescription("3 seconds"));
 
     StatsTestUtils.MetricsRecord record = statsCtxFactory.pollRecord();
     assertNotNull(record);
@@ -147,18 +156,17 @@ public class StatsTraceContextTest {
     // the propagation by putting them in the headers.
     StatsContext parentCtx = statsCtxFactory.getDefault().with(
         StatsTestUtils.EXTRA_TAG, TagValue.create("extra-tag-value-897"));
-    StatsTraceContext clientCtx = StatsTraceContext.newClientContextForTesting(
-        methodName, statsCtxFactory, parentCtx, fakeClock.getStopwatchSupplier());
+    CensusStreamTracerModule.ClientFactory clientTracerFactory =
+        census.newClientFactory(parentCtx, methodName);
     Metadata headers = new Metadata();
-    clientCtx.propagateToHeaders(headers);
+    ClientStreamTracer clientTracer = clientTracerFactory.newClientStreamTracer(headers);
 
+    // TODO(zhangkun83): write this part after the server interceptor for that is done
     // The server gets the propagated tag from the headers, and puts it on the server-side
     // StatsContext.
-    StatsTraceContext serverCtx = StatsTraceContext.newServerContext(
-        methodName, statsCtxFactory, headers, fakeClock.getStopwatchSupplier());
 
-    serverCtx.callEnded(Status.OK);
-    clientCtx.callEnded(Status.OK);
+    clientTracerFactory.callEnded(Status.OK);
+    //clientCtx.callEnded(Status.OK);
 
     StatsTestUtils.MetricsRecord serverRecord = statsCtxFactory.pollRecord();
     assertNotNull(serverRecord);
@@ -186,23 +194,25 @@ public class StatsTraceContextTest {
   @Test
   public void serverBasic() {
     String methodName = MethodDescriptor.generateFullMethodName("Service1", "method4");
-    StatsTraceContext ctx = StatsTraceContext.newServerContext(
-        methodName, statsCtxFactory, new Metadata(), fakeClock.getStopwatchSupplier());
-    ctx.wireBytesReceived(34);
-    ctx.uncompressedBytesReceived(67);
+
+    ServerStreamTracer.Factory tracerFactory = census.newServerFactory();
+    ServerStreamTracer tracer = tracerFactory.newServerStreamTracer(methodName);
+
+    tracer.inboundWireSize(34);
+    tracer.inboundUncompressedSize(67);
 
     fakeClock.forwardTime(100, MILLISECONDS);
-    ctx.wireBytesSent(1028);
-    ctx.uncompressedBytesSent(1128);
+    tracer.outboundWireSize(1028);
+    tracer.outboundUncompressedSize(1128);
 
     fakeClock.forwardTime(16, MILLISECONDS);
-    ctx.wireBytesReceived(154);
-    ctx.uncompressedBytesReceived(552);
-    ctx.wireBytesSent(99);
-    ctx.uncompressedBytesSent(865);
+    tracer.inboundWireSize(154);
+    tracer.inboundUncompressedSize(552);
+    tracer.outboundWireSize(99);
+    tracer.outboundUncompressedSize(865);
 
     fakeClock.forwardTime(24, MILLISECONDS);
-    ctx.callEnded(Status.CANCELLED);
+    tracer.streamClosed(Status.CANCELLED);
 
     StatsTestUtils.MetricsRecord record = statsCtxFactory.pollRecord();
     assertNotNull(record);

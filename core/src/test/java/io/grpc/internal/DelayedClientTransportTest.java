@@ -57,6 +57,7 @@ import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
 import io.grpc.MethodDescriptor.MethodType;
 import io.grpc.Status;
+import io.grpc.StreamTracer;
 import io.grpc.StringMarshaller;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.Executor;
@@ -108,12 +109,8 @@ public class DelayedClientTransportTest {
 
   private final CallOptions callOptions = CallOptions.DEFAULT.withAuthority("dummy_value");
   private final CallOptions callOptions2 = CallOptions.DEFAULT.withAuthority("dummy_value2");
-  private final StatsTraceContext statsTraceCtx = StatsTraceContext.newClientContext(
-      method.getFullMethodName(), NoopStatsContextFactory.INSTANCE,
-      GrpcUtil.STOPWATCH_SUPPLIER);
-  private final StatsTraceContext statsTraceCtx2 = StatsTraceContext.newClientContext(
-      method2.getFullMethodName(), NoopStatsContextFactory.INSTANCE,
-      GrpcUtil.STOPWATCH_SUPPLIER);
+  private final StatsTraceContext statsTraceCtx = new StatsTraceContext(new StreamTracer[0]);
+  private final StatsTraceContext statsTraceCtx2 = new StatsTraceContext(new StreamTracer[0]);
 
   private final FakeClock fakeExecutor = new FakeClock();
 

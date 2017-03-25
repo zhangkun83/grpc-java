@@ -162,7 +162,7 @@ final class CensusStreamTracerModule {
   /**
    * Creates a client tracer factory for a new call.
    */
-  ClientStreamTracer.Factory newClientFactory(StatsContext parentCtx, String fullMethodName) {
+  ClientFactory newClientFactory(StatsContext parentCtx, String fullMethodName) {
     return new ClientFactory(parentCtx, fullMethodName);
   }
 
@@ -174,7 +174,8 @@ final class CensusStreamTracerModule {
   }
 
   private static final ClientTracer BLANK_CLIENT_TRACER = new ClientTracer();
-  private final class ClientFactory extends ClientStreamTracer.Factory {
+
+  final class ClientFactory extends ClientStreamTracer.Factory {
 
     private final String fullMethodName;
     private final Stopwatch stopwatch;

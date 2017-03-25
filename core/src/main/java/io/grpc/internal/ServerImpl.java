@@ -453,7 +453,7 @@ public final class ServerImpl extends io.grpc.Server implements WithLogId {
         final ServerStream stream, Metadata headers) {
       Long timeoutNanos = headers.get(TIMEOUT_KEY);
 
-      // TODO(zhangkun83): attach the StatsContext from StatsTraceContext to baseContext
+      // TODO(zhangkun83): add the StatsContext from headers in an interceptor
       Context baseContext = rootContext;
 
       if (timeoutNanos == null) {

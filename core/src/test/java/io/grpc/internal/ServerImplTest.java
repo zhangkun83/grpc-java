@@ -40,6 +40,7 @@ import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.Matchers.any;
+import static org.mockito.Matchers.anyString;
 import static org.mockito.Matchers.isA;
 import static org.mockito.Matchers.isNotNull;
 import static org.mockito.Matchers.notNull;
@@ -72,6 +73,7 @@ import io.grpc.MethodDescriptor;
 import io.grpc.ServerCall;
 import io.grpc.ServerCallHandler;
 import io.grpc.ServerServiceDefinition;
+import io.grpc.ServerStreamTracer;
 import io.grpc.ServerTransportFilter;
 import io.grpc.ServiceDescriptor;
 import io.grpc.Status;
@@ -84,6 +86,7 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.SocketAddress;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.Executor;
@@ -115,7 +118,6 @@ public class ServerImplTest {
       Context.ROOT.withValue(SERVER_ONLY, "yes").withCancellation();
   private static final ImmutableList<ServerTransportFilter> NO_FILTERS = ImmutableList.of();
 
-  private final FakeStatsContextFactory statsCtxFactory = new FakeStatsContextFactory();
   private final CompressorRegistry compressorRegistry = CompressorRegistry.getDefaultInstance();
   private final DecompressorRegistry decompressorRegistry =
       DecompressorRegistry.getDefaultInstance();
@@ -131,6 +133,10 @@ public class ServerImplTest {
 
   private final FakeClock executor = new FakeClock();
   private final FakeClock timer = new FakeClock();
+  @Mock
+  private ServerStreamTracer.Factory streamTracerFactory;
+  @Mock
+  private ServerStreamTracer streamTracer;
   @Mock
   private ObjectPool<Executor> executorPool;
   @Mock
@@ -159,6 +165,7 @@ public class ServerImplTest {
     MockitoAnnotations.initMocks(this);
     when(executorPool.getObject()).thenReturn(executor.getScheduledExecutorService());
     when(timerPool.getObject()).thenReturn(timer.getScheduledExecutorService());
+    when(streamTracerFactory.newServerStreamTracer(anyString())).thenReturn(streamTracer);
   }
 
   @After
@@ -359,14 +366,9 @@ public class ServerImplTest {
     assertEquals(Status.Code.UNIMPLEMENTED, status.getCode());
     assertEquals("Method not found: Waiter/nonexist", status.getDescription());
 
-    StatsTestUtils.MetricsRecord record = statsCtxFactory.pollRecord();
-    assertNotNull(record);
-    TagValue methodTag = record.tags.get(RpcConstants.RPC_SERVER_METHOD);
-    assertNotNull(methodTag);
-    assertEquals("Waiter/nonexist", methodTag.toString());
-    TagValue statusTag = record.tags.get(RpcConstants.RPC_STATUS);
-    assertNotNull(statusTag);
-    assertEquals(Status.Code.UNIMPLEMENTED.toString(), statusTag.toString());
+    verify(streamTracerFactory).newServerStreamTracer("Waiter/nonexist");
+    verify(streamTracer).streamClosed(statusCaptor.capture());
+    assertEquals(Status.Code.UNIMPLEMENTED, statusCaptor.getValue().getCode());
   }
 
   @Test
@@ -374,8 +376,6 @@ public class ServerImplTest {
     createAndStartServer(NO_FILTERS);
     final Metadata.Key<String> metadataKey
         = Metadata.Key.of("inception", Metadata.ASCII_STRING_MARSHALLER);
-    final Metadata.Key<StatsContext> statsHeaderKey
-        = StatsTraceContext.createStatsHeader(statsCtxFactory);
     final AtomicReference<ServerCall<String, Integer>> callReference
         = new AtomicReference<ServerCall<String, Integer>>();
     MethodDescriptor<String, Integer> method = MethodDescriptor.<String, Integer>newBuilder()
@@ -406,9 +406,6 @@ public class ServerImplTest {
 
     Metadata requestHeaders = new Metadata();
     requestHeaders.put(metadataKey, "value");
-    StatsContext statsContextOnClient = statsCtxFactory.getDefault().with(
-        StatsTestUtils.EXTRA_TAG, TagValue.create("extraTagValue"));
-    requestHeaders.put(statsHeaderKey, statsContextOnClient);
     StatsTraceContext statsTraceCtx =
         transportListener.methodDetermined("Waiter/serve", requestHeaders);
     assertNotNull(statsTraceCtx);
@@ -465,30 +462,8 @@ public class ServerImplTest {
     verifyNoMoreInteractions(stream);
     verifyNoMoreInteractions(callListener);
 
-    // Check stats
-    StatsTestUtils.MetricsRecord record = statsCtxFactory.pollRecord();
-    assertNotNull(record);
-    TagValue methodTag = record.tags.get(RpcConstants.RPC_SERVER_METHOD);
-    assertNotNull(methodTag);
-    assertEquals("Waiter/serve", methodTag.toString());
-    TagValue statusTag = record.tags.get(RpcConstants.RPC_STATUS);
-    assertNotNull(statusTag);
-    assertEquals(Status.Code.OK.toString(), statusTag.toString());
-    TagValue extraTag = record.tags.get(StatsTestUtils.EXTRA_TAG);
-    assertNotNull(extraTag);
-    assertEquals("extraTagValue", extraTag.toString());
-    assertNull(record.getMetric(RpcConstants.RPC_CLIENT_REQUEST_BYTES));
-    assertNull(record.getMetric(RpcConstants.RPC_CLIENT_RESPONSE_BYTES));
-    assertNull(record.getMetric(RpcConstants.RPC_CLIENT_UNCOMPRESSED_REQUEST_BYTES));
-    assertNull(record.getMetric(RpcConstants.RPC_CLIENT_UNCOMPRESSED_RESPONSE_BYTES));
-    // The test doesn't invoke MessageFramer and MessageDeframer which keep the sizes.
-    // Thus the sizes reported to stats would be zero.
-    assertEquals(0, record.getMetricAsLongOrFail(RpcConstants.RPC_SERVER_REQUEST_BYTES));
-    assertEquals(0, record.getMetricAsLongOrFail(RpcConstants.RPC_SERVER_RESPONSE_BYTES));
-    assertEquals(0,
-        record.getMetricAsLongOrFail(RpcConstants.RPC_SERVER_UNCOMPRESSED_REQUEST_BYTES));
-    assertEquals(0,
-        record.getMetricAsLongOrFail(RpcConstants.RPC_SERVER_UNCOMPRESSED_RESPONSE_BYTES));
+    verify(streamTracerFactory).newServerStreamTracer("Waiter/serve");
+    verify(streamTracer).streamClosed(Status.OK);
   }
 
   @Test
@@ -1055,7 +1030,7 @@ public class ServerImplTest {
     assertNull(server);
     server = new ServerImpl(executorPool, timerPool, registry, fallbackRegistry,
         transportServer, SERVER_CONTEXT, decompressorRegistry, compressorRegistry, filters,
-        statsCtxFactory, GrpcUtil.STOPWATCH_SUPPLIER);
+        Arrays.asList(streamTracerFactory), GrpcUtil.STOPWATCH_SUPPLIER);
   }
 
   private void verifyExecutorsAcquired() {
