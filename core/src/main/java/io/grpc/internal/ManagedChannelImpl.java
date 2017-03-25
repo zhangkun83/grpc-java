@@ -549,13 +549,10 @@ public final class ManagedChannelImpl extends ManagedChannel implements WithLogI
       if (executor == null) {
         executor = ManagedChannelImpl.this.executor;
       }
-      StatsTraceContext statsTraceCtx = StatsTraceContext.newClientContext(
-          method.getFullMethodName(), statsFactory, stopwatchSupplier);
       return new ClientCallImpl<ReqT, RespT>(
           method,
           executor,
           callOptions,
-          statsTraceCtx,
           transportProvider,
           scheduledExecutor)
               .setDecompressorRegistry(decompressorRegistry)

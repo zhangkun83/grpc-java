@@ -48,8 +48,10 @@ import io.grpc.InternalNotifyOnServerBuild;
 import io.grpc.ServerBuilder;
 import io.grpc.ServerMethodDefinition;
 import io.grpc.ServerServiceDefinition;
+import io.grpc.ServerStreamTracer;
 import io.grpc.ServerTransportFilter;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.Executor;
@@ -161,14 +163,24 @@ public abstract class AbstractServerImplBuilder<T extends AbstractServerImplBuil
   @Override
   public ServerImpl build() {
     io.grpc.internal.InternalServer transportServer = buildTransportServer();
+    StatsContextFactory statsFactory =
+        firstNonNull(this.statsFactory, Stats.getStatsContextFactory());
+    // TODO(zhangkun83): add a setter for the factories
+    List<ServerStreamTracer.Factory> streamTracerFactories = Collections.emptyList();
+    if (statsFactory != null) {
+      CensusStreamTracerModule census =
+          new CensusStreamTracerModule(statsFactory, GrpcUtil.STOPWATCH_SUPPLIER);
+      ServerStreamTracer.Factory streamTracerFactory =
+          streamTracerFactory = census.newServerFactory();
+      streamTracerFactories = Arrays.asList(streamTracerFactory);
+    }
     ServerImpl server = new ServerImpl(getExecutorPool(),
         SharedResourcePool.forResource(GrpcUtil.TIMER_SERVICE), registryBuilder.build(),
         firstNonNull(fallbackRegistry, EMPTY_FALLBACK_REGISTRY), transportServer,
         Context.ROOT, firstNonNull(decompressorRegistry, DecompressorRegistry.getDefaultInstance()),
         firstNonNull(compressorRegistry, CompressorRegistry.getDefaultInstance()),
         transportFilters,
-        firstNonNull(statsFactory,
-            firstNonNull(Stats.getStatsContextFactory(), NoopStatsContextFactory.INSTANCE)),
+        streamTracerFactories,
         GrpcUtil.STOPWATCH_SUPPLIER);
     for (InternalNotifyOnServerBuild notifyTarget : notifyOnBuildList) {
       notifyTarget.notifyOnBuild(server);

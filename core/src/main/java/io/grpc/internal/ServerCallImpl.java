@@ -269,7 +269,7 @@ final class ServerCallImpl<ReqT, RespT> extends ServerCall<ReqT, RespT> {
     @Override
     public void closed(Status status) {
       try {
-        statsTraceCtx.callEnded(status);
+        statsTraceCtx.streamClosed(status);
         if (status.isOk()) {
           listener.onComplete();
         } else {

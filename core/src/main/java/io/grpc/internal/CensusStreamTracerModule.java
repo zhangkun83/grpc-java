@@ -31,6 +31,9 @@
 
 package io.grpc.internal;
 
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
+
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Stopwatch;
@@ -45,9 +48,9 @@ import com.google.instrumentation.stats.TagValue;
 import io.grpc.Context;
 import io.grpc.Metadata;
 import io.grpc.Status;
+import io.grpc.ClientStreamTracer;
+import io.grpc.ServerStreamTracer;
 import io.grpc.StreamTracer;
-import io.grpc.StreamTracer.ClientStreamTracerFactory;
-import io.grpc.StreamTracer.ServerStreamTracerFactory;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -72,14 +75,14 @@ final class CensusStreamTracerModule {
 
   // TODO(zhangkun): point to Census's StatsContext key once they've made it public
   static final Context.Key<StatsContext> STATS_CONTEXT_KEY =
-      Context.Key.of("io.grpc.internal.StatsContext"); 
+      Context.key("io.grpc.internal.StatsContext"); 
 
   private final StatsContextFactory statsCtxFactory;
   private final Supplier<Stopwatch> stopwatchSupplier;
   private final Metadata.Key<StatsContext> statsHeader;
 
   CensusStreamTracerModule(
-      StatsContextFactory statsCtxFactory, Supplier<Stopwatch> stopwatchSupplier) {
+      final StatsContextFactory statsCtxFactory, Supplier<Stopwatch> stopwatchSupplier) {
     this.statsCtxFactory = checkNotNull(statsCtxFactory, "statsCtxFactory");
     this.stopwatchSupplier = checkNotNull(stopwatchSupplier, "stopwatchSupplier");
     this.statsHeader =
@@ -108,11 +111,32 @@ final class CensusStreamTracerModule {
           });
   }
 
-  private static class BasicStreamTracer extends StreamTracer {
+  private static final long UNSET_CLIENT_PENDING_NANOS = -1;
+  private static final class ClientTracer extends ClientStreamTracer {
     final AtomicLong outboundWireSize = new AtomicLong();
     final AtomicLong inboundWireSize = new AtomicLong();
     final AtomicLong outboundUncompressedSize = new AtomicLong();
     final AtomicLong inboundUncompressedSize = new AtomicLong();
+
+    final AtomicLong clientPendingNanos = new AtomicLong(UNSET_CLIENT_PENDING_NANOS);
+    @Nullable
+    private final Stopwatch stopwatch;
+
+    ClientTracer() {
+      this.stopwatch = null;
+    }
+
+    ClientTracer(Stopwatch stopwatch) {
+      this.stopwatch = checkNotNull(stopwatch, "stopwatch");
+    }
+
+    @Override
+    public void headersSent() {
+      if (stopwatch != null && clientPendingNanos.get() == UNSET_CLIENT_PENDING_NANOS) {
+        clientPendingNanos.compareAndSet(
+            UNSET_CLIENT_PENDING_NANOS, stopwatch.elapsed(TimeUnit.NANOSECONDS));
+      }
+    }
 
     @Override
     public void outboundWireSize(long bytes) {
@@ -135,43 +159,26 @@ final class CensusStreamTracerModule {
     }
   }
 
-  private static final class ClientStreamTracer extends BasicStreamTracer {
-    private static final long UNSET_CLIENT_PENDING_NANOS = -1;
-    private final AtomicLong clientPendingNanos = new AtomicLong(UNSET_CLIENT_PENDING_NANOS);
-    @Nullable
-    private final Stopwatch stopwatch;
-
-    ClientStreamTracer() {
-      this.stopwatch = null;
-    }
-
-    ClientStreamTracer(Stopwatch stopwatch) {
-      this.stopwatch = checkNotNull(stopwatch, "stopwatch");
-    }
-
-    @Override
-    public void headersSent() {
-      if (stopwatch != null && clientPendingNanos.get() == UNSET_CLIENT_PENDING_NANOS) {
-        clientPendingNanos.compareAndSet(
-            UNSET_CLIENT_PENDING_NANOS, stopwatch.elapsed(TimeUnit.NANOSECONDS));
-      }
-    }
-  }
-
   /**
    * Creates a client tracer factory for a new call.
    */
-  ClientStreamTracerFactory newClientFactory(StatsContext parentCtx, String fullMethodName) {
+  ClientStreamTracer.Factory newClientFactory(StatsContext parentCtx, String fullMethodName) {
     return new ClientFactory(parentCtx, fullMethodName);
   }
 
-  private final class ClientFactory extends ClientStreamTracerFactory {
-    private static final ClientStreamTracer BLANK_TRACER = new ClientStreamTracer();
+  /**
+   * Creates a server tracer factory for a new server.
+   */
+  ServerStreamTracer.Factory newServerFactory() {
+    return new ServerFactory();
+  }
+
+  private static final ClientTracer BLANK_CLIENT_TRACER = new ClientTracer();
+  private final class ClientFactory extends ClientStreamTracer.Factory {
 
     private final String fullMethodName;
     private final Stopwatch stopwatch;
-    private final AtomicReference<ClientStreamTracer> streamTracer =
-        new AtomicReference<ClientStreamTracer>();
+    private final AtomicReference<ClientTracer> streamTracer = new AtomicReference<ClientTracer>();
     private final AtomicBoolean callEnded = new AtomicBoolean(false);
     private final StatsContext parentCtx;
 
@@ -182,13 +189,14 @@ final class CensusStreamTracerModule {
     }
 
     @Override
-    public StreamTracer newClientStreamTracer(Metadata headers) {
+    public ClientStreamTracer newClientStreamTracer(Metadata headers) {
       // TODO(zhangkun83): Once retry or hedging is implemented, a ClientCall may start more than
       // one streams.  We will need to update this file to support them.
-      checkState(streamTracer.compareAndSet(null, new ClientStreamTracer(stopwatch)),
+      checkState(streamTracer.compareAndSet(null, new ClientTracer(stopwatch)),
           "Are you creating multiple streams per call? This class doesn't yet support this case.");
       headers.discardAll(statsHeader);
       headers.put(statsHeader, parentCtx);
+      return new ClientTracer(stopwatch);
     }
 
     /**
@@ -203,14 +211,14 @@ final class CensusStreamTracerModule {
       }
       stopwatch.stop();
       long roundtripNanos = stopwatch.elapsed(TimeUnit.NANOSECONDS);
-      ClientStreamTracer tracer = streamTracer.get();
+      ClientTracer tracer = streamTracer.get();
       if (tracer == null) {
-        tracer = BLANK_TRACER;
+        tracer = BLANK_CLIENT_TRACER;
       }
       MeasurementMap.Builder builder = MeasurementMap.builder()
           // The metrics are in double
           .put(RpcConstants.RPC_CLIENT_ROUNDTRIP_LATENCY, roundtripNanos / NANOS_PER_MILLI)
-          .put(RpcConstants.RPC_CLIENT_REQUEST_BYTERS, tracer.outboundWireSize.get())
+          .put(RpcConstants.RPC_CLIENT_REQUEST_BYTES, tracer.outboundWireSize.get())
           .put(RpcConstants.RPC_CLIENT_RESPONSE_BYTES, tracer.inboundWireSize.get())
           .put(
               RpcConstants.RPC_CLIENT_UNCOMPRESSED_REQUEST_BYTES,
@@ -235,16 +243,40 @@ final class CensusStreamTracerModule {
     }
   }
 
-  private static final class ServerStreamTracer extends BasicStreamTracer {
+  private final class ServerTracer extends ServerStreamTracer {
     private final String fullMethodName;
     private final StatsContext parentCtx;
     private final AtomicBoolean streamClosed = new AtomicBoolean(false);
     private final Stopwatch stopwatch;
+    private final AtomicLong outboundWireSize = new AtomicLong();
+    private final AtomicLong inboundWireSize = new AtomicLong();
+    private final AtomicLong outboundUncompressedSize = new AtomicLong();
+    private final AtomicLong inboundUncompressedSize = new AtomicLong();
 
-    ServerStreamTracer(String fullMethodName, StatsContext parentCtx) {
+    ServerTracer(String fullMethodName, StatsContext parentCtx) {
       this.fullMethodName = checkNotNull(fullMethodName, "fullMethodName");
       this.parentCtx = checkNotNull(parentCtx, "parentCtx");
       this.stopwatch = stopwatchSupplier.get().start();
+    }
+
+    @Override
+    public void outboundWireSize(long bytes) {
+      outboundWireSize.addAndGet(bytes);
+    }
+
+    @Override
+    public void inboundWireSize(long bytes) {
+      inboundWireSize.addAndGet(bytes);
+    }
+
+    @Override
+    public void outboundUncompressedSize(long bytes) {
+      outboundUncompressedSize.addAndGet(bytes);
+    }
+
+    @Override
+    public void inboundUncompressedSize(long bytes) {
+      inboundUncompressedSize.addAndGet(bytes);
     }
 
     /**
@@ -263,14 +295,14 @@ final class CensusStreamTracerModule {
       MeasurementMap.Builder builder = MeasurementMap.builder()
           // The metrics are in double
           .put(RpcConstants.RPC_SERVER_SERVER_LATENCY, elapsedTimeNanos / NANOS_PER_MILLI)
-          .put(RpcConstants.RPC_SERVER_RESPONSE_BYTERS, tracer.outboundWireSize.get())
-          .put(RpcConstants.RPC_SERVER_REQUEST_BYTES, tracer.inboundWireSize.get())
+          .put(RpcConstants.RPC_SERVER_RESPONSE_BYTES, outboundWireSize.get())
+          .put(RpcConstants.RPC_SERVER_REQUEST_BYTES, inboundWireSize.get())
           .put(
               RpcConstants.RPC_SERVER_UNCOMPRESSED_RESPONSE_BYTES,
-              tracer.outboundUncompressedSize.get())
+              outboundUncompressedSize.get())
           .put(
               RpcConstants.RPC_SERVER_UNCOMPRESSED_REQUEST_BYTES,
-              tracer.inboundUncompressedSize.get());
+              inboundUncompressedSize.get());
       if (!status.isOk()) {
         builder.put(RpcConstants.RPC_SERVER_ERROR_COUNT, 1.0);
       }
@@ -282,15 +314,14 @@ final class CensusStreamTracerModule {
     }
   }
 
-  private final class ServerFactory extends ServerStreamTracerFactory {
+  private final class ServerFactory extends ServerStreamTracer.Factory {
     @Override
-    public StreamTracer newServerStreamTracer(String fullMethodName) {
+    public ServerStreamTracer newServerStreamTracer(String fullMethodName) {
       StatsContext parentCtx = STATS_CONTEXT_KEY.get();
       if (parentCtx == null) {
         parentCtx = statsCtxFactory.getDefault();
       }
-      return new ServerStreamTracer(fullMethodName);
+      return new ServerTracer(fullMethodName, parentCtx);
     }
   }
-
 }

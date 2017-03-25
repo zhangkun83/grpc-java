@@ -52,6 +52,7 @@ import io.grpc.Metadata;
 import io.grpc.ServerCall;
 import io.grpc.ServerMethodDefinition;
 import io.grpc.ServerServiceDefinition;
+import io.grpc.ServerStreamTracer;
 import io.grpc.ServerTransportFilter;
 import io.grpc.Status;
 import java.io.IOException;
@@ -90,7 +91,7 @@ public final class ServerImpl extends io.grpc.Server implements WithLogId {
   private final InternalHandlerRegistry registry;
   private final HandlerRegistry fallbackRegistry;
   private final List<ServerTransportFilter> transportFilters;
-  private final StatsContextFactory statsFactory;
+  private final List<ServerStreamTracer.Factory> streamTracerFactories;
   @GuardedBy("lock") private boolean started;
   @GuardedBy("lock") private boolean shutdown;
   /** non-{@code null} if immediate shutdown has been requested. */
@@ -127,7 +128,8 @@ public final class ServerImpl extends io.grpc.Server implements WithLogId {
       InternalHandlerRegistry registry, HandlerRegistry fallbackRegistry,
       InternalServer transportServer, Context rootContext,
       DecompressorRegistry decompressorRegistry, CompressorRegistry compressorRegistry,
-      List<ServerTransportFilter> transportFilters, StatsContextFactory statsFactory,
+      List<ServerTransportFilter> transportFilters,
+      List<ServerStreamTracer.Factory> streamTracerFactories,
       Supplier<Stopwatch> stopwatchSupplier) {
     this.executorPool = Preconditions.checkNotNull(executorPool, "executorPool");
     this.timeoutServicePool = Preconditions.checkNotNull(timeoutServicePool, "timeoutServicePool");
@@ -141,7 +143,8 @@ public final class ServerImpl extends io.grpc.Server implements WithLogId {
     this.compressorRegistry = compressorRegistry;
     this.transportFilters = Collections.unmodifiableList(
         new ArrayList<ServerTransportFilter>(transportFilters));
-    this.statsFactory = Preconditions.checkNotNull(statsFactory, "statsFactory");
+    this.streamTracerFactories = Collections.unmodifiableList(
+        new ArrayList<ServerStreamTracer.Factory>(streamTracerFactories));
     this.stopwatchSupplier = Preconditions.checkNotNull(stopwatchSupplier, "stopwatchSupplier");
   }
 
@@ -384,8 +387,7 @@ public final class ServerImpl extends io.grpc.Server implements WithLogId {
 
     @Override
     public StatsTraceContext methodDetermined(String methodName, Metadata headers) {
-      return StatsTraceContext.newServerContext(
-          methodName, statsFactory, headers, stopwatchSupplier);
+      return StatsTraceContext.newServerContext(streamTracerFactories, methodName);
     }
 
     @Override
@@ -427,7 +429,7 @@ public final class ServerImpl extends io.grpc.Server implements WithLogId {
                 // TODO(zhangkun83): this would allow a misbehaving client to blow up the server
                 // in-memory stats storage by sending large number of distinct unimplemented method
                 // names. (https://github.com/grpc/grpc-java/issues/2285)
-                statsTraceCtx.callEnded(status);
+                statsTraceCtx.streamClosed(status);
                 context.cancel(null);
                 return;
               }

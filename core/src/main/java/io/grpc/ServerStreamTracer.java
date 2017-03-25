@@ -37,57 +37,23 @@ package io.grpc;
 @ExperimentalApi
 // TODO(zhangkun83): define thread-safety
 // TODO(zhangkun83): call interceptorsCalled()
-public abstract class StreamTracer {
+public abstract class ServerStreamTracer extends StreamTracer {
   /**
-   * Stream is closed.
+   * Right after all interceptors has been called.
+   *
+   * @param context the Context in which the call handler will run
    */
-  public void streamClosed(Status status) {
+  public void interceptorsCalled(Context context) {
   }
 
-  /**
-   * An outbound message has been passed to the stream.  This is called as soon as the stream knows
-   * about the message, but doesn't have further guarantee such as whether the message is serialized
-   * or not.
-   */
-  public void outboundMessage() {
-  }
-
-  /**
-   * An inbound message has been received by the stream.  This is called as soon as the stream knows
-   * about the message, but doesn't have further guarantee such as whether the message is
-   * deserialized or not.
-   */
-  public void inboundMessage() {
-  }
-
-  /**
-   * The wire size of some outbound data is revealed. This can only used to record the accumulative
-   * outbound wire size. There is no guarantee wrt timing or granularity of this method.
-   */
-  public void outboundWireSize(long bytes) {
-  }
-
-  /**
-   * The uncompressed size of some outbound data is revealed. This can only used to record the
-   * accumulative outbound uncompressed size. There is no guarantee wrt timing or granularity of
-   * this method.
-   */
-  public void outboundUncompressedSize(long bytes) {
-  }
-
-  /**
-   * The wire size of some inbound data is revealed. This can only be used to record the
-   * accumulative received wire size. There is no guarantee wrt timing or granularity of this
-   * method.
-   */
-  public void inboundWireSize(long bytes) {
-  }
-
-  /**
-   * The uncompressed size of some inbound data is revealed. This can only used to record the
-   * accumulative received uncompressed size. There is no guarantee wrt timing or granularity of
-   * this method.
-   */
-  public void inboundUncompressedSize(long bytes) {
+  public static abstract class Factory {
+    /**
+     * Creates a {@link ServerStreamTracer} for a new server stream.
+     *
+     * <p>Called right before the stream is created
+     *
+     * @param fullMethodName the fully qualified method name
+     */
+    public abstract ServerStreamTracer newServerStreamTracer(String fullMethodName);
   }
 }

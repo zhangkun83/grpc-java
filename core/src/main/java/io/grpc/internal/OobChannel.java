@@ -168,12 +168,9 @@ final class OobChannel extends ManagedChannel implements WithLogId {
   @Override
   public <RequestT, ResponseT> ClientCall<RequestT, ResponseT> newCall(
       MethodDescriptor<RequestT, ResponseT> methodDescriptor, CallOptions callOptions) {
-    StatsTraceContext statsTraceCtx = StatsTraceContext.newClientContext(
-        methodDescriptor.getFullMethodName(), statsFactory, stopwatchSupplier);
     return new ClientCallImpl<RequestT, ResponseT>(methodDescriptor,
         callOptions.getExecutor() == null ? executor : callOptions.getExecutor(),
-        callOptions, statsTraceCtx, transportProvider,
-        deadlineCancellationExecutor);
+        callOptions, transportProvider, deadlineCancellationExecutor);
   }
 
   @Override

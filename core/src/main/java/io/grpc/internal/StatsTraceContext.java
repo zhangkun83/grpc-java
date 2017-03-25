@@ -31,6 +31,9 @@
 
 package io.grpc.internal;
 
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkState;
+
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Stopwatch;
@@ -42,8 +45,12 @@ import com.google.instrumentation.stats.StatsContext;
 import com.google.instrumentation.stats.StatsContextFactory;
 import com.google.instrumentation.stats.TagKey;
 import com.google.instrumentation.stats.TagValue;
+import io.grpc.CallOptions;
+import io.grpc.Context;
 import io.grpc.Metadata;
 import io.grpc.Status;
+import io.grpc.ClientStreamTracer;
+import io.grpc.ServerStreamTracer;
 import io.grpc.StreamTracer;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -52,73 +59,102 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import javax.annotation.Nullable;
 
 /**
- * The stats and tracing information for a call.
+ * The stats and tracing information for a stream.
  */
 // TODO(zhangkun83): thread-safety of this class
 public final class StatsTraceContext extends StreamTracer {
-  private final StreamTracer[] streamTracers;
+  public static final StatsTraceContext NOOP = new StatsTraceContext(new StreamTracer[0]);
 
-  /**
-   * Creates a {@code StatsTraceContext} from a list of tracers.
-   */
-  public StatsTraceContext(List<StreamTracer> tracers) {
-    streamTracers = tracers.toArray(new StreamTracer[tracers.size()]);
+  final StreamTracer[] tracers;
+
+  public static StatsTraceContext newClientContext(CallOptions callOptions, Metadata headers) {
+    List<ClientStreamTracer.Factory> factories = callOptions.getStreamTracerFactories();
+    StreamTracer[] tracers = new StreamTracer[factories.size()];
+    for (int i = 0; i < tracers.length; i++) {
+      tracers[i] = factories.get(i).newClientStreamTracer(headers);
+    }
+    return new StatsTraceContext(tracers);
   }
 
-  @Override
-  public void headersSent() {
-    for (StreamTracer tracer : streamTracers) {
-      tracer.headersSent();
+  public static StatsTraceContext newServerContext(
+      List<ServerStreamTracer.Factory> factories, String fullMethodName) {
+    StreamTracer[] tracers = new StreamTracer[factories.size()];
+    for (int i = 0; i < tracers.length; i++) {
+      tracers[i] = factories.get(i).newServerStreamTracer(fullMethodName);
+    }
+    return new StatsTraceContext(tracers);
+  }
+
+  private StatsTraceContext(StreamTracer[] tracers) {
+    this.tracers = tracers;
+  }
+
+  /**
+   * Client-only.
+   */
+  public void clientHeadersSent() {
+    for (StreamTracer tracer : tracers) {
+      ((ClientStreamTracer) tracer).headersSent();
+    }
+  }
+
+  /**
+   * Server-only.
+   */
+  public void serverInterceptorsCalled(Context context) {
+    for (StreamTracer tracer : tracers) {
+      ((ServerStreamTracer) tracer).interceptorsCalled(context);
     }
   }
 
   @Override
   public void streamClosed(Status status) {
-    for (StreamTracer tracer : streamTracers) {
+    for (StreamTracer tracer : tracers) {
       tracer.streamClosed(status);
     }
   }
 
   @Override
   public void outboundMessage() {
-    for (StreamTracer tracer : streamTracers) {
+    for (StreamTracer tracer : tracers) {
       tracer.outboundMessage();
     }
   }
 
   @Override
   public void inboundMessage() {
-    for (StreamTracer tracer : streamTracers) {
+    for (StreamTracer tracer : tracers) {
       tracer.inboundMessage();
     }
   }
 
   @Override
-  public void outboundUncompressedSize(int bytes) {
-    for (StreamTracer tracer : streamTracers) {
+  public void outboundUncompressedSize(long bytes) {
+    for (StreamTracer tracer : tracers) {
       tracer.outboundUncompressedSize(bytes);
     }
   }
 
   @Override
-  public void outboundWireSize(int bytes) {
-    for (StreamTracer tracer : streamTracers) {
+  public void outboundWireSize(long bytes) {
+    for (StreamTracer tracer : tracers) {
       tracer.outboundWireSize(bytes);
     }
   }
 
   @Override
-  public void inboundUncompressedSize(int bytes) {
-    for (StreamTracer tracer : streamTracers) {
+  public void inboundUncompressedSize(long bytes) {
+    for (StreamTracer tracer : tracers) {
       tracer.inboundUncompressedSize(bytes);
     }
   }
 
   @Override
-  public void inboundWireSize(int bytes) {
-    for (StreamTracer tracer : streamTracers) {
+  public void inboundWireSize(long bytes) {
+    for (StreamTracer tracer : tracers) {
       tracer.inboundWireSize(bytes);
     }
   }

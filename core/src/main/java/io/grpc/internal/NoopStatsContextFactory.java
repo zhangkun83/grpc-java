@@ -39,6 +39,7 @@ import com.google.instrumentation.stats.TagValue;
 import java.io.InputStream;
 import java.io.OutputStream;
 
+// TODO(zhangkun83): should this be deleted?
 public final class NoopStatsContextFactory extends StatsContextFactory {
   private static final StatsContext DEFAULT_CONTEXT = new NoopStatsContext();
   private static final StatsContext.Builder BUILDER = new NoopContextBuilder();

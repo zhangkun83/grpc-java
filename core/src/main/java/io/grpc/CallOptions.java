@@ -35,7 +35,6 @@ import static com.google.common.base.Preconditions.checkArgument;
 
 import com.google.common.base.MoreObjects;
 import com.google.common.base.Preconditions;
-import io.grpc.StreamTracer.ClientStreamTracerFactory;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -77,7 +76,7 @@ public final class CallOptions {
   private Object[][] customOptions = new Object[0][2];
 
   // Unmodifiable list
-  private List<ClientStreamTracerFactory> streamTracerFactories = Collections.emptyList();
+  private List<ClientStreamTracer.Factory> streamTracerFactories = Collections.emptyList();
 
   /**
    * Opposite to fail fast.
@@ -251,10 +250,10 @@ public final class CallOptions {
    *
    * <p>This method doesn't replace existing factories, or try to de-duplicate factories.
    */
-  public CallOptions withStreamTracerFactory(ClientStreamTracerFactory factory) {
+  public CallOptions withStreamTracerFactory(ClientStreamTracer.Factory factory) {
     CallOptions newOptions = new CallOptions(this);
-    ArrayList<ClientStreamTracerFactory> newList =
-        new ArrayList<ClientStreamTracerFactory>(streamTracerFactories.size() + 1);
+    ArrayList<ClientStreamTracer.Factory> newList =
+        new ArrayList<ClientStreamTracer.Factory>(streamTracerFactories.size() + 1);
     newList.addAll(streamTracerFactories);
     newList.add(factory);
     newOptions.streamTracerFactories = Collections.unmodifiableList(newList);
@@ -264,7 +263,7 @@ public final class CallOptions {
   /**
    * Returns an immutable list of {@code ClientStreamTracerFactory}s.
    */
-  public List<ClientStreamTracerFactory> getStreamTracerFactories() {
+  public List<ClientStreamTracer.Factory> getStreamTracerFactories() {
     return streamTracerFactories;
   }
 

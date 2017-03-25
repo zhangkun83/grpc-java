@@ -322,7 +322,7 @@ public class MessageDeframer implements Closeable {
       if (totalBytesRead > 0) {
         listener.bytesRead(totalBytesRead);
         if (state == State.BODY) {
-          statsTraceCtx.wireBytesReceived(totalBytesRead);
+          statsTraceCtx.inboundWireSize(totalBytesRead);
         }
       }
     }
@@ -367,7 +367,7 @@ public class MessageDeframer implements Closeable {
   }
 
   private InputStream getUncompressedBody() {
-    statsTraceCtx.uncompressedBytesReceived(nextFrame.readableBytes());
+    statsTraceCtx.inboundUncompressedSize(nextFrame.readableBytes());
     return ReadableBuffers.openStream(nextFrame, true);
   }
 
@@ -462,7 +462,7 @@ public class MessageDeframer implements Closeable {
 
     private void reportCount() {
       if (count > maxCount) {
-        statsTraceCtx.uncompressedBytesReceived(count - maxCount);
+        statsTraceCtx.inboundUncompressedSize(count - maxCount);
         maxCount = count;
       }
     }
