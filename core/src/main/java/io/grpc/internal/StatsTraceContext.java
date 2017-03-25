@@ -55,6 +55,8 @@ import io.grpc.StreamTracer;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -88,8 +90,17 @@ public final class StatsTraceContext extends StreamTracer {
     return new StatsTraceContext(tracers);
   }
 
-  private StatsTraceContext(StreamTracer[] tracers) {
+  @VisibleForTesting
+  StatsTraceContext(StreamTracer[] tracers) {
     this.tracers = tracers;
+  }
+
+  /**
+   * Returns a copy of the tracer list.
+   */
+  @VisibleForTesting
+  List<StreamTracer> getTracersForTest() {
+    return new ArrayList<StreamTracer>(Arrays.asList(tracers));
   }
 
   /**

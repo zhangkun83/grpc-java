@@ -36,6 +36,7 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.Matchers.eq;
+import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
@@ -45,6 +46,7 @@ import com.google.instrumentation.stats.RpcConstants;
 import io.grpc.Codec;
 import io.grpc.Metadata;
 import io.grpc.Status;
+import io.grpc.StreamTracer;
 import io.grpc.internal.testing.StatsTestUtils.FakeStatsContextFactory;
 import io.grpc.internal.testing.StatsTestUtils.MetricsRecord;
 import java.io.BufferedInputStream;
@@ -68,10 +70,14 @@ import org.mockito.MockitoAnnotations;
 public class MessageFramerTest {
   @Mock
   private MessageFramer.Sink sink;
+  @Mock
+  private StreamTracer tracer;
   private MessageFramer framer;
 
   @Captor
   private ArgumentCaptor<ByteWritableBuffer> frameCaptor;
+  @Captor
+  private ArgumentCaptor<Long> longCaptor;
   private BytesWritableBufferAllocator allocator =
       new BytesWritableBufferAllocator(1000, 1000);
   private FakeStatsContextFactory statsCtxFactory;
@@ -84,8 +90,7 @@ public class MessageFramerTest {
     statsCtxFactory = new FakeStatsContextFactory();
     // MessageDeframerTest tests with a client-side StatsTraceContext, so here we test with a
     // server-side StatsTraceContext.
-    statsTraceCtx = StatsTraceContext.newServerContext(
-        "service/method", statsCtxFactory, new Metadata(), GrpcUtil.STOPWATCH_SUPPLIER);
+    statsTraceCtx = new StatsTraceContext(new StreamTracer[]{tracer});
     framer = new MessageFramer(sink, allocator, statsTraceCtx);
   }
 
@@ -384,20 +389,22 @@ public class MessageFramerTest {
   }
 
   private void checkStats(long wireBytesSent, long uncompressedBytesSent) {
-    statsTraceCtx.callEnded(Status.OK);
-    MetricsRecord record = statsCtxFactory.pollRecord();
-    assertEquals(0, record.getMetricAsLongOrFail(
-            RpcConstants.RPC_SERVER_REQUEST_BYTES));
-    assertEquals(0, record.getMetricAsLongOrFail(
-            RpcConstants.RPC_SERVER_UNCOMPRESSED_REQUEST_BYTES));
-    assertEquals(wireBytesSent,
-        record.getMetricAsLongOrFail(RpcConstants.RPC_SERVER_RESPONSE_BYTES));
-    assertEquals(uncompressedBytesSent,
-        record.getMetricAsLongOrFail(RpcConstants.RPC_SERVER_UNCOMPRESSED_RESPONSE_BYTES));
-    assertNull(record.getMetric(RpcConstants.RPC_CLIENT_REQUEST_BYTES));
-    assertNull(record.getMetric(RpcConstants.RPC_CLIENT_RESPONSE_BYTES));
-    assertNull(record.getMetric(RpcConstants.RPC_CLIENT_UNCOMPRESSED_REQUEST_BYTES));
-    assertNull(record.getMetric(RpcConstants.RPC_CLIENT_UNCOMPRESSED_RESPONSE_BYTES));
+    long actualWireSize = 0;
+    long actualUncompressedSize = 0;
+
+    verify(tracer, atLeast(1)).outboundWireSize(longCaptor.capture());
+    for (Long portion : longCaptor.getAllValues()) {
+      actualWireSize += portion;
+    }
+
+    verify(tracer, atLeast(1)).outboundUncompressedSize(longCaptor.capture());
+    for (Long portion : longCaptor.getAllValues()) {
+      actualUncompressedSize += portion;
+    }
+
+    verifyNoMoreInteractions(tracer);
+    assertEquals(wireBytesSent, actualWireSize);
+    assertEquals(uncompressedBytesSent, actualUncompressedSize);
   }
 
   static class ByteWritableBuffer implements WritableBuffer {

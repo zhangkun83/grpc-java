@@ -59,8 +59,8 @@ public class CallOptionsTest {
   private CallCredentials sampleCreds = mock(CallCredentials.class);
   private CallOptions.Key<String> option1 = CallOptions.Key.of("option1", "default");
   private CallOptions.Key<String> option2 = CallOptions.Key.of("option2", "default");
-  private ClientStreamTracerFactory tracerFactory1 = mock(ClientStreamTracerFactory.class);
-  private ClientStreamTracerFactory tracerFactory2 = mock(ClientStreamTracerFactory.class);
+  private ClientStreamTracer.Factory tracerFactory1 = mock(ClientStreamTracer.Factory.class);
+  private ClientStreamTracer.Factory tracerFactory2 = mock(ClientStreamTracer.Factory.class);
   private CallOptions allSet = CallOptions.DEFAULT
       .withAuthority(sampleAuthority)
       .withDeadline(sampleDeadline)

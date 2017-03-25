@@ -36,6 +36,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Matchers.anyInt;
+import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
@@ -50,6 +51,7 @@ import com.google.instrumentation.stats.RpcConstants;
 import io.grpc.Codec;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import io.grpc.StreamTracer;
 import io.grpc.internal.MessageDeframer.Listener;
 import io.grpc.internal.MessageDeframer.SizeEnforcingInputStream;
 import io.grpc.internal.testing.StatsTestUtils.FakeStatsContextFactory;
@@ -78,11 +80,9 @@ public class MessageDeframerTest {
   @Rule public final ExpectedException thrown = ExpectedException.none();
 
   private Listener listener = mock(Listener.class);
-  private final FakeStatsContextFactory statsCtxFactory = new FakeStatsContextFactory();
-  // MessageFramerTest tests with a server-side StatsTraceContext, so here we test with a
-  // client-side StatsTraceContext.
-  private StatsTraceContext statsTraceCtx = StatsTraceContext.newClientContext(
-      "service/method", statsCtxFactory, GrpcUtil.STOPWATCH_SUPPLIER);
+  private StreamTracer tracer = mock(StreamTracer.class);
+  private StatsTraceContext statsTraceCtx = new StatsTraceContext(new StreamTracer[]{tracer});
+  private ArgumentCaptor<Long> longCaptor = ArgumentCaptor.forClass(null);
 
   private MessageDeframer deframer = new MessageDeframer(listener, Codec.Identity.NONE,
       DEFAULT_MAX_MESSAGE_SIZE, statsTraceCtx, "test");
@@ -392,20 +392,22 @@ public class MessageDeframerTest {
   }
 
   private void checkStats(long wireBytesReceived, long uncompressedBytesReceived) {
-    statsTraceCtx.callEnded(Status.OK);
-    MetricsRecord record = statsCtxFactory.pollRecord();
-    assertEquals(0, record.getMetricAsLongOrFail(
-            RpcConstants.RPC_CLIENT_REQUEST_BYTES));
-    assertEquals(0, record.getMetricAsLongOrFail(
-            RpcConstants.RPC_CLIENT_UNCOMPRESSED_REQUEST_BYTES));
-    assertEquals(wireBytesReceived,
-        record.getMetricAsLongOrFail(RpcConstants.RPC_CLIENT_RESPONSE_BYTES));
-    assertEquals(uncompressedBytesReceived,
-        record.getMetricAsLongOrFail(RpcConstants.RPC_CLIENT_UNCOMPRESSED_RESPONSE_BYTES));
-    assertNull(record.getMetric(RpcConstants.RPC_SERVER_REQUEST_BYTES));
-    assertNull(record.getMetric(RpcConstants.RPC_SERVER_RESPONSE_BYTES));
-    assertNull(record.getMetric(RpcConstants.RPC_SERVER_UNCOMPRESSED_REQUEST_BYTES));
-    assertNull(record.getMetric(RpcConstants.RPC_SERVER_UNCOMPRESSED_RESPONSE_BYTES));
+    long actualWireSize = 0;
+    long actualUncompressedSize = 0;
+
+    verify(tracer, atLeast(1)).inboundWireSize(longCaptor.capture());
+    for (Long portion : longCaptor.getAllValues()) {
+      actualWireSize += portion;
+    }
+
+    verify(tracer, atLeast(1)).inboundUncompressedSize(longCaptor.capture());
+    for (Long portion : longCaptor.getAllValues()) {
+      actualUncompressedSize += portion;
+    }
+
+    verifyNoMoreInteractions(tracer);
+    assertEquals(wireBytesReceived, actualWireSize);
+    assertEquals(uncompressedBytesReceived, actualUncompressedSize);
   }
 
   private static List<Byte> bytes(ArgumentCaptor<InputStream> captor) {
