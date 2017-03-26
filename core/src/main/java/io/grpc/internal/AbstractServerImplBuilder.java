@@ -164,7 +164,7 @@ public abstract class AbstractServerImplBuilder<T extends AbstractServerImplBuil
   public ServerImpl build() {
     io.grpc.internal.InternalServer transportServer = buildTransportServer();
     StatsContextFactory statsFactory =
-        firstNonNull(this.statsFactory, Stats.getStatsContextFactory());
+        this.statsFactory != null ? this.statsFactory : Stats.getStatsContextFactory();
     // TODO(zhangkun83): add a setter for the factories
     List<ServerStreamTracer.Factory> streamTracerFactories = Collections.emptyList();
     if (statsFactory != null) {

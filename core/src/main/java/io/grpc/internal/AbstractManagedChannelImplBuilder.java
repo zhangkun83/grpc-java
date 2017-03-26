@@ -283,7 +283,8 @@ public abstract class AbstractManagedChannelImplBuilder
       // getResource(), then this shouldn't be a problem unless called on the UI thread.
       nameResolverFactory = NameResolverProvider.asFactory();
     }
-    StatsContextFactory statsCtxFactory = firstNonNull(this.statsFactory, Stats.getStatsContextFactory());
+    StatsContextFactory statsCtxFactory =
+        this.statsFactory != null ? this.statsFactory : Stats.getStatsContextFactory();
     if (statsCtxFactory != null) {
       CensusStreamTracerModule census =
           new CensusStreamTracerModule(statsCtxFactory, GrpcUtil.STOPWATCH_SUPPLIER);
