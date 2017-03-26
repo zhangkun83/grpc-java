@@ -285,9 +285,11 @@ public abstract class AbstractManagedChannelImplBuilder
     }
     StatsContextFactory statsCtxFactory = firstNonNull(this.statsFactory, Stats.getStatsContextFactory());
     if (statsCtxFactory != null) {
+      CensusStreamTracerModule census =
+          new CensusStreamTracerModule(statsCtxFactory, GrpcUtil.STOPWATCH_SUPPLIER);
       // First interceptor runs last (see ClientInterceptors.intercept()), so that no
       // other interceptor can override the tracer factory we set in CallOptions.
-      interceptors.add(0, new CensusInterceptor(statsCtxFactory));
+      interceptors.add(0, census.getClientInterceptor());
     }
     return new ManagedChannelImpl(
         target,
@@ -339,53 +341,6 @@ public abstract class AbstractManagedChannelImplBuilder
       };
     } else {
       return SharedResourcePool.forResource(GrpcUtil.SHARED_CHANNEL_EXECUTOR);
-    }
-  }
-
-  private static class CensusInterceptor implements ClientInterceptor {
-    final CensusStreamTracerModule census;
-    final StatsContextFactory statsCtxFactory;
-
-    CensusInterceptor(StatsContextFactory statsCtxFactory) {
-      this.statsCtxFactory = Preconditions.checkNotNull(statsCtxFactory, "statsCtxFactory");
-      this.census = new CensusStreamTracerModule(statsCtxFactory, GrpcUtil.STOPWATCH_SUPPLIER);
-    }
-
-    @Override
-    public <ReqT, RespT> ClientCall<ReqT, RespT> interceptCall(
-        MethodDescriptor<ReqT, RespT> method, CallOptions callOptions, Channel next) {
-      StatsContext parentCtx = CensusStreamTracerModule.STATS_CONTEXT_KEY.get();
-      if (parentCtx == null) {
-        parentCtx = statsCtxFactory.getDefault();
-      }
-      final CensusStreamTracerModule.ClientFactory tracerFactory =
-          census.newClientFactory(parentCtx, method.getFullMethodName());
-      final ClientCall<ReqT, RespT> call =
-          next.newCall(method, callOptions.withStreamTracerFactory(tracerFactory));
-      return new ForwardingClientCall<ReqT, RespT>() {
-        @Override
-        protected ClientCall<ReqT, RespT> delegate() {
-          return call;
-        }
-
-        @Override
-        public void start(final Listener<RespT> responseListener, Metadata headers) {
-          delegate().start(
-              new ForwardingClientCallListener<RespT>() {
-                @Override
-                protected ClientCall.Listener<RespT> delegate() {
-                  return responseListener;
-                }
-
-                @Override
-                public void onClose(Status status, Metadata trailers) {
-                  tracerFactory.callEnded(status);
-                  super.onClose(status, trailers);
-                }
-              },
-              headers);
-        }
-      };
     }
   }
 

@@ -35,22 +35,30 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 
 import com.google.instrumentation.stats.RpcConstants;
 import com.google.instrumentation.stats.StatsContext;
 import com.google.instrumentation.stats.StatsContextFactory;
 import com.google.instrumentation.stats.TagValue;
 import io.grpc.ClientStreamTracer;
+import io.grpc.Context;
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
+import io.grpc.ServerCall;
+import io.grpc.ServerCallHandler;
 import io.grpc.ServerStreamTracer;
 import io.grpc.Status;
 import io.grpc.internal.testing.StatsTestUtils;
 import io.grpc.internal.testing.StatsTestUtils.FakeStatsContextFactory;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.After;
+import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
+import org.mockito.Mock;
+import org.mockito.MockitoAnnotations;
 
 /**
  * Test for {@link StatsTraceContext}.
@@ -62,19 +70,31 @@ public class CensusStreamTracerModuleTest {
   private final CensusStreamTracerModule census =
       new CensusStreamTracerModule(statsCtxFactory, fakeClock.getStopwatchSupplier());
 
+  @Mock
+  private ServerCall.Listener<String> mockServerCallListener;
+  @Mock
+  private ServerCall<String, String> mockServerCall;
+
+  @Before
+  public void setUp() {
+    MockitoAnnotations.initMocks(this);
+  }
+
   @After
-  public void allRecordsVerified() {
+  public void wrapUp() {
     assertNull(statsCtxFactory.pollRecord());
+    // These mocks are not stubbed, thus shouldn't be called.
+    verifyNoMoreInteractions(mockServerCallListener);
+    verifyNoMoreInteractions(mockServerCall);
   }
 
   @Test
-  public void clientBasic() {
+  public void clientBasicStats() {
     String methodName = MethodDescriptor.generateFullMethodName("Service1", "method1");
-    CensusStreamTracerModule.ClientFactory tracerFactory =
-        census.newClientFactory(statsCtxFactory.getDefault(), methodName);
+    CensusStreamTracerModule.ClientTracerFactory tracerFactory =
+        census.newClientTracerFactory(statsCtxFactory.getDefault(), methodName);
     Metadata headers = new Metadata();
     ClientStreamTracer tracer = tracerFactory.newClientStreamTracer(headers);
-    // TODO(zhangkun83): verify that Census tags are propagated to headers
 
     fakeClock.forwardTime(30, MILLISECONDS);
     tracer.headersSent();
@@ -92,7 +112,7 @@ public class CensusStreamTracerModuleTest {
     fakeClock.forwardTime(24, MILLISECONDS);
     tracer.inboundWireSize(154);
     tracer.inboundUncompressedSize(552);
-    // TODO(zhangkun83): make sure streamClosed is called for client
+    // TODO(zhangkun83): add test to make sure streamClosed is called by the core for client
     tracer.streamClosed(Status.OK);
     tracerFactory.callEnded(Status.OK);
 
@@ -117,10 +137,10 @@ public class CensusStreamTracerModuleTest {
   }
 
   @Test
-  public void clientNotSent() {
+  public void clientStreamNeverCreated() {
     String methodName = MethodDescriptor.generateFullMethodName("Service1", "method2");
-    CensusStreamTracerModule.ClientFactory tracerFactory =
-        census.newClientFactory(statsCtxFactory.getDefault(), methodName);
+    CensusStreamTracerModule.ClientTracerFactory tracerFactory =
+        census.newClientTracerFactory(statsCtxFactory.getDefault(), methodName);
 
     fakeClock.forwardTime(3000, MILLISECONDS);
     tracerFactory.callEnded(Status.DEADLINE_EXCEEDED.withDescription("3 seconds"));
@@ -143,10 +163,6 @@ public class CensusStreamTracerModuleTest {
     assertNull(record.getMetric(RpcConstants.RPC_CLIENT_SERVER_ELAPSED_TIME));
   }
 
-  /**
-   * Tags that are propagated by the {@link StatsContextFactory} are properly propagated via
-   * the headers.
-   */
   @Test
   public void tagPropagation() {
     String methodName = MethodDescriptor.generateFullMethodName("Service1", "method3");
@@ -154,20 +170,33 @@ public class CensusStreamTracerModuleTest {
     // EXTRA_TAG is propagated by the FakeStatsContextFactory. Note that not all tags are
     // propagated.  The StatsContextFactory decides which tags are to propagated.  gRPC facilitates
     // the propagation by putting them in the headers.
-    StatsContext parentCtx = statsCtxFactory.getDefault().with(
+    StatsContext clientCtx = statsCtxFactory.getDefault().with(
         StatsTestUtils.EXTRA_TAG, TagValue.create("extra-tag-value-897"));
-    CensusStreamTracerModule.ClientFactory clientTracerFactory =
-        census.newClientFactory(parentCtx, methodName);
+    CensusStreamTracerModule.ClientTracerFactory clientTracerFactory =
+        census.newClientTracerFactory(clientCtx, methodName);
     Metadata headers = new Metadata();
+    // This propagates clientCtx to headers
     ClientStreamTracer clientTracer = clientTracerFactory.newClientStreamTracer(headers);
 
-    // TODO(zhangkun83): write this part after the server interceptor for that is done
-    // The server gets the propagated tag from the headers, and puts it on the server-side
-    // StatsContext.
+    // The server interceptor deserializes clientCtx from the headers and puts it in the Context,
+    // allowing the server tracer to record stats with the propagated tags.
+    final AtomicReference<Context> contextFromCallHandler = new AtomicReference<Context>();
+    ServerCallHandler<String, String> serverCallHandler = new ServerCallHandler<String, String>() {
+        @Override
+        public ServerCall.Listener<String> startCall(
+            ServerCall<String, String> call, Metadata headers) {
+          contextFromCallHandler.set(Context.current());
+          return mockServerCallListener;
+        }
+      };
+    census.getServerInterceptor().interceptCall(mockServerCall, headers, serverCallHandler);
+    assertNotNull(contextFromCallHandler.get());
+    ServerStreamTracer serverTracer =
+        census.getServerTracerFactory().newServerStreamTracer(methodName);
+    serverTracer.interceptorsCalled(contextFromCallHandler.get());
+    serverTracer.streamClosed(Status.OK);
 
-    clientTracerFactory.callEnded(Status.OK);
-    //clientCtx.callEnded(Status.OK);
-
+    // Verifies that the server tracer records the status with the propagated tag
     StatsTestUtils.MetricsRecord serverRecord = statsCtxFactory.pollRecord();
     assertNotNull(serverRecord);
     assertNoClientContent(serverRecord);
@@ -178,6 +207,10 @@ public class CensusStreamTracerModuleTest {
     assertNull(serverRecord.getMetric(RpcConstants.RPC_SERVER_ERROR_COUNT));
     TagValue serverPropagatedTag = serverRecord.tags.get(StatsTestUtils.EXTRA_TAG);
     assertEquals("extra-tag-value-897", serverPropagatedTag.toString());
+
+    // Verifies that the client tracer factory uses clientCtx, which includes the custom tags, to
+    // record stats.
+    clientTracerFactory.callEnded(Status.OK);
 
     StatsTestUtils.MetricsRecord clientRecord = statsCtxFactory.pollRecord();
     assertNotNull(clientRecord);
@@ -192,10 +225,10 @@ public class CensusStreamTracerModuleTest {
   }
 
   @Test
-  public void serverBasic() {
+  public void serverBasicStats() {
     String methodName = MethodDescriptor.generateFullMethodName("Service1", "method4");
 
-    ServerStreamTracer.Factory tracerFactory = census.newServerFactory();
+    ServerStreamTracer.Factory tracerFactory = census.getServerTracerFactory();
     ServerStreamTracer tracer = tracerFactory.newServerStreamTracer(methodName);
 
     tracer.inboundWireSize(34);

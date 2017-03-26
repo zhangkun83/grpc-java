@@ -170,9 +170,7 @@ public abstract class AbstractServerImplBuilder<T extends AbstractServerImplBuil
     if (statsFactory != null) {
       CensusStreamTracerModule census =
           new CensusStreamTracerModule(statsFactory, GrpcUtil.STOPWATCH_SUPPLIER);
-      ServerStreamTracer.Factory streamTracerFactory =
-          streamTracerFactory = census.newServerFactory();
-      streamTracerFactories = Arrays.asList(streamTracerFactory);
+      streamTracerFactories = Arrays.asList(census.getServerTracerFactory());
     }
     ServerImpl server = new ServerImpl(getExecutorPool(),
         SharedResourcePool.forResource(GrpcUtil.TIMER_SERVICE), registryBuilder.build(),

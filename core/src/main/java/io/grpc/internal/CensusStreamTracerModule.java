@@ -31,6 +31,7 @@
 
 package io.grpc.internal;
 
+import static com.google.common.base.MoreObjects.firstNonNull;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 
@@ -45,8 +46,18 @@ import com.google.instrumentation.stats.StatsContext;
 import com.google.instrumentation.stats.StatsContextFactory;
 import com.google.instrumentation.stats.TagKey;
 import com.google.instrumentation.stats.TagValue;
+import io.grpc.CallOptions;
+import io.grpc.Channel;
+import io.grpc.ClientCall;
+import io.grpc.ClientInterceptor;
 import io.grpc.Context;
+import io.grpc.ForwardingClientCall;
+import io.grpc.ForwardingClientCallListener;
 import io.grpc.Metadata;
+import io.grpc.MethodDescriptor;
+import io.grpc.ServerCall;
+import io.grpc.ServerCallHandler;
+import io.grpc.ServerInterceptor;
 import io.grpc.Status;
 import io.grpc.ClientStreamTracer;
 import io.grpc.ServerStreamTracer;
@@ -74,12 +85,16 @@ final class CensusStreamTracerModule {
   private static final double NANOS_PER_MILLI = TimeUnit.MILLISECONDS.toNanos(1);
 
   // TODO(zhangkun): point to Census's StatsContext key once they've made it public
+  @VisibleForTesting
   static final Context.Key<StatsContext> STATS_CONTEXT_KEY =
       Context.key("io.grpc.internal.StatsContext"); 
 
   private final StatsContextFactory statsCtxFactory;
   private final Supplier<Stopwatch> stopwatchSupplier;
   private final Metadata.Key<StatsContext> statsHeader;
+  private final CensusClientInterceptor clientInterceptor = new CensusClientInterceptor();
+  private final CensusServerInterceptor serverInterceptor = new CensusServerInterceptor();
+  private final ServerTracerFactory serverTracerFactory = new ServerTracerFactory();
 
   CensusStreamTracerModule(
       final StatsContextFactory statsCtxFactory, Supplier<Stopwatch> stopwatchSupplier) {
@@ -162,20 +177,35 @@ final class CensusStreamTracerModule {
   /**
    * Creates a client tracer factory for a new call.
    */
-  ClientFactory newClientFactory(StatsContext parentCtx, String fullMethodName) {
-    return new ClientFactory(parentCtx, fullMethodName);
+  @VisibleForTesting
+  ClientTracerFactory newClientTracerFactory(StatsContext parentCtx, String fullMethodName) {
+    return new ClientTracerFactory(parentCtx, fullMethodName);
   }
 
   /**
-   * Creates a server tracer factory for a new server.
+   * Returns the server tracer factory.
    */
-  ServerStreamTracer.Factory newServerFactory() {
-    return new ServerFactory();
+  ServerStreamTracer.Factory getServerTracerFactory() {
+    return new ServerTracerFactory();
+  }
+
+  /**
+   * Returns the client interceptor that facilitates Census-based stats reporting.
+   */
+  ClientInterceptor getClientInterceptor() {
+    return clientInterceptor;
+  }
+
+  /**
+   * Returns the server interceptor that facilitates Census-based stats reporting.
+   */
+  ServerInterceptor getServerInterceptor() {
+    return serverInterceptor;
   }
 
   private static final ClientTracer BLANK_CLIENT_TRACER = new ClientTracer();
 
-  final class ClientFactory extends ClientStreamTracer.Factory {
+  final class ClientTracerFactory extends ClientStreamTracer.Factory {
 
     private final String fullMethodName;
     private final Stopwatch stopwatch;
@@ -183,7 +213,7 @@ final class CensusStreamTracerModule {
     private final AtomicBoolean callEnded = new AtomicBoolean(false);
     private final StatsContext parentCtx;
 
-    ClientFactory(StatsContext parentCtx, String fullMethodName) {
+    ClientTracerFactory(StatsContext parentCtx, String fullMethodName) {
       this.parentCtx = checkNotNull(parentCtx, "parentCtx");
       this.fullMethodName = checkNotNull(fullMethodName, "fullMethodName");
       this.stopwatch = stopwatchSupplier.get().start();
@@ -191,13 +221,14 @@ final class CensusStreamTracerModule {
 
     @Override
     public ClientStreamTracer newClientStreamTracer(Metadata headers) {
+      ClientTracer tracer = new ClientTracer(stopwatch);
       // TODO(zhangkun83): Once retry or hedging is implemented, a ClientCall may start more than
       // one streams.  We will need to update this file to support them.
-      checkState(streamTracer.compareAndSet(null, new ClientTracer(stopwatch)),
+      checkState(streamTracer.compareAndSet(null, tracer),
           "Are you creating multiple streams per call? This class doesn't yet support this case.");
       headers.discardAll(statsHeader);
       headers.put(statsHeader, parentCtx);
-      return new ClientTracer(stopwatch);
+      return tracer;
     }
 
     /**
@@ -246,7 +277,7 @@ final class CensusStreamTracerModule {
 
   private final class ServerTracer extends ServerStreamTracer {
     private final String fullMethodName;
-    private final StatsContext parentCtx;
+    private final AtomicReference<StatsContext> parentCtx = new AtomicReference<StatsContext>();
     private final AtomicBoolean streamClosed = new AtomicBoolean(false);
     private final Stopwatch stopwatch;
     private final AtomicLong outboundWireSize = new AtomicLong();
@@ -254,10 +285,17 @@ final class CensusStreamTracerModule {
     private final AtomicLong outboundUncompressedSize = new AtomicLong();
     private final AtomicLong inboundUncompressedSize = new AtomicLong();
 
-    ServerTracer(String fullMethodName, StatsContext parentCtx) {
+    ServerTracer(String fullMethodName) {
       this.fullMethodName = checkNotNull(fullMethodName, "fullMethodName");
-      this.parentCtx = checkNotNull(parentCtx, "parentCtx");
       this.stopwatch = stopwatchSupplier.get().start();
+    }
+
+    @Override
+    public void interceptorsCalled(Context context) {
+      StatsContext parentCtx = STATS_CONTEXT_KEY.get(context);
+      if (parentCtx != null) {
+        this.parentCtx.compareAndSet(null, parentCtx);
+      }
     }
 
     @Override
@@ -307,7 +345,8 @@ final class CensusStreamTracerModule {
       if (!status.isOk()) {
         builder.put(RpcConstants.RPC_SERVER_ERROR_COUNT, 1.0);
       }
-      parentCtx
+      StatsContext ctx = firstNonNull(parentCtx.get(), statsCtxFactory.getDefault());
+      ctx
           .with(
               RpcConstants.RPC_SERVER_METHOD, TagValue.create(fullMethodName),
               RpcConstants.RPC_STATUS, TagValue.create(status.getCode().toString()))
@@ -315,14 +354,70 @@ final class CensusStreamTracerModule {
     }
   }
 
-  private final class ServerFactory extends ServerStreamTracer.Factory {
+  private final class ServerTracerFactory extends ServerStreamTracer.Factory {
     @Override
     public ServerStreamTracer newServerStreamTracer(String fullMethodName) {
+      return new ServerTracer(fullMethodName);
+    }
+  }
+
+  // TODO(zhangkun83): add unit test
+  private class CensusClientInterceptor implements ClientInterceptor {
+    @Override
+    public <ReqT, RespT> ClientCall<ReqT, RespT> interceptCall(
+        MethodDescriptor<ReqT, RespT> method, CallOptions callOptions, Channel next) {
       StatsContext parentCtx = STATS_CONTEXT_KEY.get();
       if (parentCtx == null) {
         parentCtx = statsCtxFactory.getDefault();
       }
-      return new ServerTracer(fullMethodName, parentCtx);
+      final ClientTracerFactory tracerFactory =
+          newClientTracerFactory(parentCtx, method.getFullMethodName());
+      final ClientCall<ReqT, RespT> call =
+          next.newCall(method, callOptions.withStreamTracerFactory(tracerFactory));
+      return new ForwardingClientCall<ReqT, RespT>() {
+        @Override
+        protected ClientCall<ReqT, RespT> delegate() {
+          return call;
+        }
+
+        @Override
+        public void start(final Listener<RespT> responseListener, Metadata headers) {
+          delegate().start(
+              new ForwardingClientCallListener<RespT>() {
+                @Override
+                protected ClientCall.Listener<RespT> delegate() {
+                  return responseListener;
+                }
+
+                @Override
+                public void onClose(Status status, Metadata trailers) {
+                  tracerFactory.callEnded(status);
+                  super.onClose(status, trailers);
+                }
+              },
+              headers);
+        }
+      };
+    }
+  }
+
+  // TODO(zhangkun83): add unit test
+  private class CensusServerInterceptor implements ServerInterceptor {
+    @Override
+    public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
+        ServerCall<ReqT, RespT> call, Metadata headers, ServerCallHandler<ReqT, RespT> next) {
+      StatsContext propagatedCtx = headers.get(statsHeader);
+      if (propagatedCtx != null) {
+        Context newCtx = Context.current().withValue(STATS_CONTEXT_KEY, propagatedCtx);
+        Context origCtx = newCtx.attach();
+        try {
+          return next.startCall(call, headers);
+        } finally {
+          newCtx.detach(origCtx);
+        }
+      } else {
+        return next.startCall(call, headers);
+      }
     }
   }
 }
