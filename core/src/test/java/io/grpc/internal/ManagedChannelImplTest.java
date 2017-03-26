@@ -86,7 +86,6 @@ import io.grpc.SecurityLevel;
 import io.grpc.Status;
 import io.grpc.StringMarshaller;
 import io.grpc.internal.TestUtils.MockClientTransportInfo;
-import io.grpc.internal.testing.StatsTestUtils.FakeStatsContextFactory;
 import java.net.SocketAddress;
 import java.net.URI;
 import java.util.ArrayList;
@@ -141,7 +140,6 @@ public class ManagedChannelImplTest {
   private final FakeClock timer = new FakeClock();
   private final FakeClock executor = new FakeClock();
   private final FakeClock oobExecutor = new FakeClock();
-  private final FakeStatsContextFactory statsCtxFactory = new FakeStatsContextFactory();
 
   @Rule public final ExpectedException thrown = ExpectedException.none();
 
@@ -149,8 +147,6 @@ public class ManagedChannelImplTest {
   private Helper helper;
   @Captor
   private ArgumentCaptor<Status> statusCaptor;
-  @Captor
-  private ArgumentCaptor<StatsTraceContext> statsTraceCtxCaptor;
   @Mock
   private LoadBalancer.Factory mockLoadBalancerFactory;
   @Mock
@@ -191,7 +187,7 @@ public class ManagedChannelImplTest {
         mockTransportFactory, DecompressorRegistry.getDefaultInstance(),
         CompressorRegistry.getDefaultInstance(), timerServicePool, executorPool, oobExecutorPool,
         timer.getStopwatchSupplier(),  ManagedChannelImpl.IDLE_TIMEOUT_MILLIS_DISABLE, userAgent,
-        interceptors, statsCtxFactory);
+        interceptors);
     // Force-exit the initial idle-mode
     channel.exitIdleMode();
     assertEquals(0, timer.numPendingTasks());
@@ -319,17 +315,14 @@ public class ManagedChannelImplTest {
 
     verify(mockTransport, never()).newStream(same(method), same(headers), same(CallOptions.DEFAULT),
         any(StatsTraceContext.class));
-    statsCtxFactory.pollContextOrFail();
 
     // Second RPC, will be assigned to the real transport
     ClientCall<String, Integer> call2 = channel.newCall(method, CallOptions.DEFAULT);
     call2.start(mockCallListener2, headers2);
     verify(mockTransport).newStream(same(method), same(headers2), same(CallOptions.DEFAULT),
-        statsTraceCtxCaptor.capture());
-    assertEquals(statsCtxFactory.pollContextOrFail(),
-        statsTraceCtxCaptor.getValue().getStatsContext());
+        any(StatsTraceContext.class));
     verify(mockTransport).newStream(same(method), same(headers2), same(CallOptions.DEFAULT),
-        statsTraceCtxCaptor.capture());
+        any(StatsTraceContext.class));
     verify(mockStream2).start(any(ClientStreamListener.class));
 
     // Shutdown

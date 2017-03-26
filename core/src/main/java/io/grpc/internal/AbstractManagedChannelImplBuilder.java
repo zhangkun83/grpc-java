@@ -38,18 +38,27 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.instrumentation.stats.Stats;
+import com.google.instrumentation.stats.StatsContext;
 import com.google.instrumentation.stats.StatsContextFactory;
 import io.grpc.Attributes;
+import io.grpc.CallOptions;
+import io.grpc.Channel;
+import io.grpc.ClientCall;
 import io.grpc.ClientInterceptor;
 import io.grpc.CompressorRegistry;
 import io.grpc.DecompressorRegistry;
 import io.grpc.EquivalentAddressGroup;
+import io.grpc.ForwardingClientCall;
+import io.grpc.ForwardingClientCallListener;
 import io.grpc.LoadBalancer;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
+import io.grpc.Metadata;
+import io.grpc.MethodDescriptor;
 import io.grpc.NameResolver;
 import io.grpc.NameResolverProvider;
 import io.grpc.PickFirstBalancerFactory;
+import io.grpc.Status;
 import java.net.SocketAddress;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -274,6 +283,12 @@ public abstract class AbstractManagedChannelImplBuilder
       // getResource(), then this shouldn't be a problem unless called on the UI thread.
       nameResolverFactory = NameResolverProvider.asFactory();
     }
+    StatsContextFactory statsCtxFactory = firstNonNull(this.statsFactory, Stats.getStatsContextFactory());
+    if (statsCtxFactory != null) {
+      // First interceptor runs last (see ClientInterceptors.intercept()), so that no
+      // other interceptor can override the tracer factory we set in CallOptions.
+      interceptors.add(0, new CensusInterceptor(statsCtxFactory));
+    }
     return new ManagedChannelImpl(
         target,
         // TODO(carl-mastrangelo): Allow clients to pass this in
@@ -290,10 +305,7 @@ public abstract class AbstractManagedChannelImplBuilder
         GrpcUtil.STOPWATCH_SUPPLIER,
         idleTimeoutMillis,
         userAgent,
-        interceptors,
-        firstNonNull(
-            statsFactory,
-            firstNonNull(Stats.getStatsContextFactory(), NoopStatsContextFactory.INSTANCE)));
+        interceptors);
   }
 
   /**
@@ -327,6 +339,53 @@ public abstract class AbstractManagedChannelImplBuilder
       };
     } else {
       return SharedResourcePool.forResource(GrpcUtil.SHARED_CHANNEL_EXECUTOR);
+    }
+  }
+
+  private static class CensusInterceptor implements ClientInterceptor {
+    final CensusStreamTracerModule census;
+    final StatsContextFactory statsCtxFactory;
+
+    CensusInterceptor(StatsContextFactory statsCtxFactory) {
+      this.statsCtxFactory = Preconditions.checkNotNull(statsCtxFactory, "statsCtxFactory");
+      this.census = new CensusStreamTracerModule(statsCtxFactory, GrpcUtil.STOPWATCH_SUPPLIER);
+    }
+
+    @Override
+    public <ReqT, RespT> ClientCall<ReqT, RespT> interceptCall(
+        MethodDescriptor<ReqT, RespT> method, CallOptions callOptions, Channel next) {
+      StatsContext parentCtx = CensusStreamTracerModule.STATS_CONTEXT_KEY.get();
+      if (parentCtx == null) {
+        parentCtx = statsCtxFactory.getDefault();
+      }
+      final CensusStreamTracerModule.ClientFactory tracerFactory =
+          census.newClientFactory(parentCtx, method.getFullMethodName());
+      final ClientCall<ReqT, RespT> call =
+          next.newCall(method, callOptions.withStreamTracerFactory(tracerFactory));
+      return new ForwardingClientCall<ReqT, RespT>() {
+        @Override
+        protected ClientCall<ReqT, RespT> delegate() {
+          return call;
+        }
+
+        @Override
+        public void start(final Listener<RespT> responseListener, Metadata headers) {
+          delegate().start(
+              new ForwardingClientCallListener<RespT>() {
+                @Override
+                protected ClientCall.Listener<RespT> delegate() {
+                  return responseListener;
+                }
+
+                @Override
+                public void onClose(Status status, Metadata trailers) {
+                  tracerFactory.callEnded(status);
+                  super.onClose(status, trailers);
+                }
+              },
+              headers);
+        }
+      };
     }
   }
 

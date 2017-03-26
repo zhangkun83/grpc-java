@@ -54,7 +54,9 @@ import io.grpc.MethodDescriptor;
 import io.grpc.MethodDescriptor.Marshaller;
 import io.grpc.MethodDescriptor.MethodType;
 import io.grpc.ServerCall;
+import io.grpc.ServerStreamTracer;
 import io.grpc.Status;
+import io.grpc.StreamTracer;
 import io.grpc.internal.ServerCallImpl.ServerStreamListenerImpl;
 import io.grpc.internal.testing.StatsTestUtils;
 import io.grpc.internal.testing.StatsTestUtils.FakeStatsContextFactory;
@@ -78,6 +80,7 @@ public class ServerCallImplTest {
   @Rule public final ExpectedException thrown = ExpectedException.none();
   @Mock private ServerStream stream;
   @Mock private ServerCall.Listener<Long> callListener;
+  @Mock private ServerStreamTracer streamTracer;
   @Captor private ArgumentCaptor<Status> statusCaptor;
 
   private ServerCallImpl<Long, Long> call;
@@ -91,14 +94,13 @@ public class ServerCallImplTest {
       .build();
 
   private final Metadata requestHeaders = new Metadata();
-  private final FakeStatsContextFactory statsCtxFactory = new FakeStatsContextFactory();
-  private final StatsTraceContext statsTraceCtx = StatsTraceContext.newServerContext(
-      method.getFullMethodName(), statsCtxFactory, requestHeaders, GrpcUtil.STOPWATCH_SUPPLIER);
+  private StatsTraceContext statsTraceCtx;
 
   @Before
   public void setUp() {
     MockitoAnnotations.initMocks(this);
     context = Context.ROOT.withCancellation();
+    statsTraceCtx = new StatsTraceContext(new StreamTracer[] {streamTracer});
     call = new ServerCallImpl<Long, Long>(stream, method, requestHeaders, context,
         statsTraceCtx, DecompressorRegistry.getDefaultInstance(),
         CompressorRegistry.getDefaultInstance());
@@ -232,7 +234,7 @@ public class ServerCallImplTest {
     verify(callListener).onComplete();
     assertTrue(context.isCancelled());
     assertNull(context.cancellationCause());
-    checkStats(Status.Code.OK);
+    verify(streamTracer).streamClosed(Status.OK);
   }
 
   @Test
@@ -246,7 +248,7 @@ public class ServerCallImplTest {
     verify(callListener).onCancel();
     assertTrue(context.isCancelled());
     assertNull(context.cancellationCause());
-    checkStats(Status.Code.CANCELLED);
+    verify(streamTracer).streamClosed(Status.CANCELLED);
   }
 
   @Test
@@ -327,28 +329,6 @@ public class ServerCallImplTest {
     thrown.expect(RuntimeException.class);
     thrown.expectMessage("unexpected exception");
     streamListener.messageRead(inputStream);
-  }
-
-  private void checkStats(Status.Code statusCode) {
-    StatsTestUtils.MetricsRecord record = statsCtxFactory.pollRecord();
-    assertNotNull(record);
-    TagValue statusTag = record.tags.get(RpcConstants.RPC_STATUS);
-    assertNotNull(statusTag);
-    assertEquals(statusCode.toString(), statusTag.toString());
-    assertNull(record.getMetric(RpcConstants.RPC_CLIENT_REQUEST_BYTES));
-    assertNull(record.getMetric(RpcConstants.RPC_CLIENT_RESPONSE_BYTES));
-    assertNull(record.getMetric(RpcConstants.RPC_CLIENT_UNCOMPRESSED_REQUEST_BYTES));
-    assertNull(record.getMetric(RpcConstants.RPC_CLIENT_UNCOMPRESSED_RESPONSE_BYTES));
-    // The test doesn't invoke MessageFramer and MessageDeframer which keep the sizes.
-    // Thus the sizes reported to stats would be zero.
-    assertEquals(0,
-        record.getMetricAsLongOrFail(RpcConstants.RPC_SERVER_REQUEST_BYTES));
-    assertEquals(0,
-        record.getMetricAsLongOrFail(RpcConstants.RPC_SERVER_RESPONSE_BYTES));
-    assertEquals(0,
-        record.getMetricAsLongOrFail(RpcConstants.RPC_SERVER_UNCOMPRESSED_REQUEST_BYTES));
-    assertEquals(0,
-        record.getMetricAsLongOrFail(RpcConstants.RPC_SERVER_UNCOMPRESSED_RESPONSE_BYTES));
   }
 
   private static class LongMarshaller implements Marshaller<Long> {
