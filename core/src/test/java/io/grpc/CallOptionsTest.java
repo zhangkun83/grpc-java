@@ -60,8 +60,8 @@ public class CallOptionsTest {
   private CallCredentials sampleCreds = mock(CallCredentials.class);
   private CallOptions.Key<String> option1 = CallOptions.Key.of("option1", "default");
   private CallOptions.Key<String> option2 = CallOptions.Key.of("option2", "default");
-  private ClientStreamTracer.Factory tracerFactory1 = mock(ClientStreamTracer.Factory.class);
-  private ClientStreamTracer.Factory tracerFactory2 = mock(ClientStreamTracer.Factory.class);
+  private ClientStreamTracer.Factory tracerFactory1 = new FakeTracerFactory("tracerFactory1");
+  private ClientStreamTracer.Factory tracerFactory2 = new FakeTracerFactory("tracerFactory2");
   private CallOptions allSet = CallOptions.DEFAULT
       .withAuthority(sampleAuthority)
       .withDeadline(sampleDeadline)
@@ -170,7 +170,7 @@ public class CallOptionsTest {
     assertThat(actual).contains("waitForReady=true");
     assertThat(actual).contains("maxInboundMessageSize=44");
     assertThat(actual).contains("maxOutboundMessageSize=55");
-    assertThat(actual).contains("streamTracerFactories=[]");
+    assertThat(actual).contains("streamTracerFactories=[tracerFactory1, tracerFactory2]");
   }
 
   @Test
@@ -261,6 +261,24 @@ public class CallOptionsTest {
         throw new IllegalArgumentException();
       }
       this.time += unit.toNanos(period);
+    }
+  }
+
+  private static class FakeTracerFactory extends ClientStreamTracer.Factory {
+    final String name;
+
+    FakeTracerFactory(String name) {
+      this.name = name;
+    }
+
+    @Override
+    public ClientStreamTracer newClientStreamTracer(Metadata headers) {
+      return new ClientStreamTracer() {};
+    }
+
+    @Override
+    public String toString() {
+      return name;
     }
   }
 }

@@ -77,7 +77,9 @@ public class MessageFramerTest {
   @Captor
   private ArgumentCaptor<ByteWritableBuffer> frameCaptor;
   @Captor
-  private ArgumentCaptor<Long> longCaptor;
+  private ArgumentCaptor<Long> wireSizeCaptor;
+  @Captor
+  private ArgumentCaptor<Long> uncompressedSizeCaptor;
   private BytesWritableBufferAllocator allocator =
       new BytesWritableBufferAllocator(1000, 1000);
   private FakeStatsContextFactory statsCtxFactory;
@@ -392,13 +394,13 @@ public class MessageFramerTest {
     long actualWireSize = 0;
     long actualUncompressedSize = 0;
 
-    verify(tracer, atLeast(1)).outboundWireSize(longCaptor.capture());
-    for (Long portion : longCaptor.getAllValues()) {
+    verify(tracer, atLeast(0)).outboundWireSize(wireSizeCaptor.capture());
+    for (Long portion : wireSizeCaptor.getAllValues()) {
       actualWireSize += portion;
     }
 
-    verify(tracer, atLeast(1)).outboundUncompressedSize(longCaptor.capture());
-    for (Long portion : longCaptor.getAllValues()) {
+    verify(tracer, atLeast(0)).outboundUncompressedSize(uncompressedSizeCaptor.capture());
+    for (Long portion : uncompressedSizeCaptor.getAllValues()) {
       actualUncompressedSize += portion;
     }
 
