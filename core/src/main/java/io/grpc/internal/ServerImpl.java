@@ -386,7 +386,7 @@ public final class ServerImpl extends io.grpc.Server implements WithLogId {
 
     @Override
     public StatsTraceContext methodDetermined(String methodName, Metadata headers) {
-      return StatsTraceContext.newServerContext(streamTracerFactories, methodName);
+      return StatsTraceContext.newServerContext(streamTracerFactories, methodName, headers);
     }
 
     @Override
@@ -396,7 +396,7 @@ public final class ServerImpl extends io.grpc.Server implements WithLogId {
       final StatsTraceContext statsTraceCtx = Preconditions.checkNotNull(
           stream.statsTraceContext(), "statsTraceCtx not present from stream");
 
-      final Context.CancellableContext context = createContext(stream, headers);
+      final Context.CancellableContext context = createContext(stream, headers, statsTraceCtx);
       final Executor wrappedExecutor;
       // This is a performance optimization that avoids the synchronization and queuing overhead
       // that comes with SerializingExecutor.
@@ -432,7 +432,7 @@ public final class ServerImpl extends io.grpc.Server implements WithLogId {
                 context.cancel(null);
                 return;
               }
-              listener = startCall(stream, methodName, method, headers, context);
+              listener = startCall(stream, methodName, method, headers, context, statsTraceCtx);
             } catch (RuntimeException e) {
               stream.close(Status.fromThrowable(e), new Metadata());
               context.cancel(null);
@@ -449,11 +449,10 @@ public final class ServerImpl extends io.grpc.Server implements WithLogId {
     }
 
     private Context.CancellableContext createContext(
-        final ServerStream stream, Metadata headers) {
+        final ServerStream stream, Metadata headers, StatsTraceContext statsTraceCtx) {
       Long timeoutNanos = headers.get(TIMEOUT_KEY);
 
-      // TODO(zhangkun83): add the StatsContext from headers in an interceptor
-      Context baseContext = rootContext;
+      Context baseContext = statsTraceCtx.serverFilterContext(rootContext);
 
       if (timeoutNanos == null) {
         return baseContext.withCancellation();
@@ -479,7 +478,7 @@ public final class ServerImpl extends io.grpc.Server implements WithLogId {
     /** Never returns {@code null}. */
     private <ReqT, RespT> ServerStreamListener startCall(ServerStream stream, String fullMethodName,
         ServerMethodDefinition<ReqT, RespT> methodDef, Metadata headers,
-        Context.CancellableContext context) {
+        Context.CancellableContext context, StatsTraceContext statsTraceCtx) {
       // TODO(ejona86): should we update fullMethodName to have the canonical path of the method?
       ServerCallImpl<ReqT, RespT> call = new ServerCallImpl<ReqT, RespT>(
           stream, methodDef.getMethodDescriptor(), headers, context, stream.statsTraceContext(),

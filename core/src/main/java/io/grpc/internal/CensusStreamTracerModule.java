@@ -93,7 +93,6 @@ final class CensusStreamTracerModule {
   private final Supplier<Stopwatch> stopwatchSupplier;
   private final Metadata.Key<StatsContext> statsHeader;
   private final CensusClientInterceptor clientInterceptor = new CensusClientInterceptor();
-  private final CensusServerInterceptor serverInterceptor = new CensusServerInterceptor();
   private final ServerTracerFactory serverTracerFactory = new ServerTracerFactory();
 
   CensusStreamTracerModule(
@@ -196,13 +195,6 @@ final class CensusStreamTracerModule {
     return clientInterceptor;
   }
 
-  /**
-   * Returns the server interceptor that facilitates Census-based stats reporting.
-   */
-  ServerInterceptor getServerInterceptor() {
-    return serverInterceptor;
-  }
-
   private static final ClientTracer BLANK_CLIENT_TRACER = new ClientTracer();
 
   final class ClientTracerFactory extends ClientStreamTracer.Factory {
@@ -277,7 +269,8 @@ final class CensusStreamTracerModule {
 
   private final class ServerTracer extends ServerStreamTracer {
     private final String fullMethodName;
-    private final AtomicReference<StatsContext> parentCtx = new AtomicReference<StatsContext>();
+    @Nullable
+    private final StatsContext parentCtx;
     private final AtomicBoolean streamClosed = new AtomicBoolean(false);
     private final Stopwatch stopwatch;
     private final AtomicLong outboundWireSize = new AtomicLong();
@@ -285,17 +278,10 @@ final class CensusStreamTracerModule {
     private final AtomicLong outboundUncompressedSize = new AtomicLong();
     private final AtomicLong inboundUncompressedSize = new AtomicLong();
 
-    ServerTracer(String fullMethodName) {
+    ServerTracer(String fullMethodName, @Nullable StatsContext parentCtx) {
       this.fullMethodName = checkNotNull(fullMethodName, "fullMethodName");
       this.stopwatch = stopwatchSupplier.get().start();
-    }
-
-    @Override
-    public void interceptorsCalled(Context context) {
-      StatsContext parentCtx = STATS_CONTEXT_KEY.get(context);
-      if (parentCtx != null) {
-        this.parentCtx.compareAndSet(null, parentCtx);
-      }
+      this.parentCtx = parentCtx;
     }
 
     @Override
@@ -345,19 +331,29 @@ final class CensusStreamTracerModule {
       if (!status.isOk()) {
         builder.put(RpcConstants.RPC_SERVER_ERROR_COUNT, 1.0);
       }
-      StatsContext ctx = firstNonNull(parentCtx.get(), statsCtxFactory.getDefault());
+      StatsContext ctx = firstNonNull(parentCtx, statsCtxFactory.getDefault());
       ctx
           .with(
               RpcConstants.RPC_SERVER_METHOD, TagValue.create(fullMethodName),
               RpcConstants.RPC_STATUS, TagValue.create(status.getCode().toString()))
           .record(builder.build());
     }
+
+    @Override
+    public <ReqT, RespT> Context filterContext(Context context) {
+      if (parentCtx != null) {
+        return context.withValue(STATS_CONTEXT_KEY, parentCtx);
+      } else {
+        return context;
+      }
+    }
   }
 
   private final class ServerTracerFactory extends ServerStreamTracer.Factory {
     @Override
-    public ServerStreamTracer newServerStreamTracer(String fullMethodName) {
-      return new ServerTracer(fullMethodName);
+    public ServerStreamTracer newServerStreamTracer(String fullMethodName, Metadata headers) {
+      StatsContext parentCtx = headers.get(statsHeader);
+      return new ServerTracer(fullMethodName, parentCtx);
     }
   }
 
@@ -398,26 +394,6 @@ final class CensusStreamTracerModule {
               headers);
         }
       };
-    }
-  }
-
-  // TODO(zhangkun83): add unit test
-  private class CensusServerInterceptor implements ServerInterceptor {
-    @Override
-    public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
-        ServerCall<ReqT, RespT> call, Metadata headers, ServerCallHandler<ReqT, RespT> next) {
-      StatsContext propagatedCtx = headers.get(statsHeader);
-      if (propagatedCtx != null) {
-        Context newCtx = Context.current().withValue(STATS_CONTEXT_KEY, propagatedCtx);
-        Context origCtx = newCtx.attach();
-        try {
-          return next.startCall(call, headers);
-        } finally {
-          newCtx.detach(origCtx);
-        }
-      } else {
-        return next.startCall(call, headers);
-      }
     }
   }
 }

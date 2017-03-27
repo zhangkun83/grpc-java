@@ -32,6 +32,7 @@
 package io.grpc.internal;
 
 import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 
 import com.google.common.annotations.VisibleForTesting;
@@ -48,6 +49,7 @@ import com.google.instrumentation.stats.TagValue;
 import io.grpc.CallOptions;
 import io.grpc.Context;
 import io.grpc.Metadata;
+import io.grpc.ServerCall;
 import io.grpc.Status;
 import io.grpc.ClientStreamTracer;
 import io.grpc.ServerStreamTracer;
@@ -82,10 +84,10 @@ public final class StatsTraceContext extends StreamTracer {
   }
 
   public static StatsTraceContext newServerContext(
-      List<ServerStreamTracer.Factory> factories, String fullMethodName) {
+      List<ServerStreamTracer.Factory> factories, String fullMethodName, Metadata headers) {
     StreamTracer[] tracers = new StreamTracer[factories.size()];
     for (int i = 0; i < tracers.length; i++) {
-      tracers[i] = factories.get(i).newServerStreamTracer(fullMethodName);
+      tracers[i] = factories.get(i).newServerStreamTracer(fullMethodName, headers);
     }
     return new StatsTraceContext(tracers);
   }
@@ -115,10 +117,13 @@ public final class StatsTraceContext extends StreamTracer {
   /**
    * Server-only.
    */
-  public void serverInterceptorsCalled(Context context) {
+  public <ReqT, RespT> Context serverFilterContext(Context context) {
+    Context ctx = checkNotNull(context, "context");
     for (StreamTracer tracer : tracers) {
-      ((ServerStreamTracer) tracer).interceptorsCalled(context);
+      ctx = ((ServerStreamTracer) tracer).filterContext(ctx);
+      checkNotNull(ctx, "%s returns null context", tracer);
     }
+    return ctx;
   }
 
   @Override

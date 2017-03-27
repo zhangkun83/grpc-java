@@ -36,14 +36,14 @@ package io.grpc;
  */
 @ExperimentalApi
 // TODO(zhangkun83): define thread-safety
-// TODO(zhangkun83): call interceptorsCalled()
+// TODO(zhangkun83): install all tracer interceptors in ServerImpl
 public abstract class ServerStreamTracer extends StreamTracer {
   /**
-   * Right after all interceptors has been called.
-   *
-   * @param context the Context in which the call handler will run
+   * Called before the interceptors and the call handlers and make changes to the Context object
+   * if needed.
    */
-  public void interceptorsCalled(Context context) {
+  public <ReqT, RespT> Context filterContext(Context context) {
+    return context;
   }
 
   public static abstract class Factory {
@@ -53,7 +53,9 @@ public abstract class ServerStreamTracer extends StreamTracer {
      * <p>Called right before the stream is created
      *
      * @param fullMethodName the fully qualified method name
+     * @param headers the received request headers
      */
-    public abstract ServerStreamTracer newServerStreamTracer(String fullMethodName);
+    public abstract ServerStreamTracer newServerStreamTracer(
+        String fullMethodName, Metadata headers);
   }
 }

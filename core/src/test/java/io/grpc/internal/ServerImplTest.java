@@ -41,6 +41,7 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.anyString;
+import static org.mockito.Matchers.eq;
 import static org.mockito.Matchers.isA;
 import static org.mockito.Matchers.isNotNull;
 import static org.mockito.Matchers.notNull;
@@ -49,6 +50,7 @@ import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
@@ -114,6 +116,7 @@ public class ServerImplTest {
   private static final IntegerMarshaller INTEGER_MARSHALLER = IntegerMarshaller.INSTANCE;
   private static final StringMarshaller STRING_MARSHALLER = StringMarshaller.INSTANCE;
   private static final Context.Key<String> SERVER_ONLY = Context.key("serverOnly");
+  private static final Context.Key<String> SERVER_TRACER_ADDED_KEY = Context.key("tracer-added");
   private static final Context.CancellableContext SERVER_CONTEXT =
       Context.ROOT.withValue(SERVER_ONLY, "yes").withCancellation();
   private static final ImmutableList<ServerTransportFilter> NO_FILTERS = ImmutableList.of();
@@ -135,8 +138,12 @@ public class ServerImplTest {
   private final FakeClock timer = new FakeClock();
   @Mock
   private ServerStreamTracer.Factory streamTracerFactory;
-  @Mock
-  private ServerStreamTracer streamTracer;
+  private final ServerStreamTracer streamTracer = spy(new ServerStreamTracer() {
+      @Override
+      public <ReqT, RespT> Context filterContext(Context context) {
+        return context.withValue(SERVER_TRACER_ADDED_KEY, "tracer-added");
+      }
+    });
   @Mock
   private ObjectPool<Executor> executorPool;
   @Mock
@@ -165,7 +172,8 @@ public class ServerImplTest {
     MockitoAnnotations.initMocks(this);
     when(executorPool.getObject()).thenReturn(executor.getScheduledExecutorService());
     when(timerPool.getObject()).thenReturn(timer.getScheduledExecutorService());
-    when(streamTracerFactory.newServerStreamTracer(anyString())).thenReturn(streamTracer);
+    when(streamTracerFactory.newServerStreamTracer(anyString(), any(Metadata.class)))
+        .thenReturn(streamTracer);
   }
 
   @After
@@ -366,7 +374,7 @@ public class ServerImplTest {
     assertEquals(Status.Code.UNIMPLEMENTED, status.getCode());
     assertEquals("Method not found: Waiter/nonexist", status.getDescription());
 
-    verify(streamTracerFactory).newServerStreamTracer("Waiter/nonexist");
+    verify(streamTracerFactory).newServerStreamTracer(eq("Waiter/nonexist"), same(requestHeaders));
     verify(streamTracer).streamClosed(statusCaptor.capture());
     assertEquals(Status.Code.UNIMPLEMENTED, statusCaptor.getValue().getCode());
   }
@@ -378,6 +386,7 @@ public class ServerImplTest {
         = Metadata.Key.of("inception", Metadata.ASCII_STRING_MARSHALLER);
     final AtomicReference<ServerCall<String, Integer>> callReference
         = new AtomicReference<ServerCall<String, Integer>>();
+    final AtomicReference<Context> callContextReference = new AtomicReference<Context>();
     MethodDescriptor<String, Integer> method = MethodDescriptor.<String, Integer>newBuilder()
         .setType(MethodDescriptor.MethodType.UNKNOWN)
         .setFullMethodName("Waiter/serve")
@@ -398,6 +407,7 @@ public class ServerImplTest {
                 assertNotNull(headers);
                 assertEquals("value", headers.get(metadataKey));
                 callReference.set(call);
+                callContextReference.set(Context.current());
                 return callListener;
               }
             }).build());
@@ -421,6 +431,9 @@ public class ServerImplTest {
     ServerCall<String, Integer> call = callReference.get();
     assertNotNull(call);
     verify(stream).getAuthority();
+    Context callContext = callContextReference.get();
+    assertNotNull(callContext);
+    assertEquals("tracer-added", SERVER_TRACER_ADDED_KEY.get(callContext));
 
     String order = "Lots of pizza, please";
     streamListener.messageRead(STRING_MARSHALLER.stream(order));
@@ -462,7 +475,7 @@ public class ServerImplTest {
     verifyNoMoreInteractions(stream);
     verifyNoMoreInteractions(callListener);
 
-    verify(streamTracerFactory).newServerStreamTracer("Waiter/serve");
+    verify(streamTracerFactory).newServerStreamTracer(eq("Waiter/serve"), same(requestHeaders));
     verify(streamTracer).streamClosed(Status.OK);
   }
 

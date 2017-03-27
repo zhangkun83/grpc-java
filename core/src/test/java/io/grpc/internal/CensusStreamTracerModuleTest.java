@@ -178,25 +178,18 @@ public class CensusStreamTracerModuleTest {
     // This propagates clientCtx to headers
     ClientStreamTracer clientTracer = clientTracerFactory.newClientStreamTracer(headers);
 
-    // The server interceptor deserializes clientCtx from the headers and puts it in the Context,
-    // allowing the server tracer to record stats with the propagated tags.
-    final AtomicReference<Context> contextFromCallHandler = new AtomicReference<Context>();
-    ServerCallHandler<String, String> serverCallHandler = new ServerCallHandler<String, String>() {
-        @Override
-        public ServerCall.Listener<String> startCall(
-            ServerCall<String, String> call, Metadata headers) {
-          contextFromCallHandler.set(Context.current());
-          return mockServerCallListener;
-        }
-      };
-    census.getServerInterceptor().interceptCall(mockServerCall, headers, serverCallHandler);
-    assertNotNull(contextFromCallHandler.get());
     ServerStreamTracer serverTracer =
-        census.getServerTracerFactory().newServerStreamTracer(methodName);
-    serverTracer.interceptorsCalled(contextFromCallHandler.get());
-    serverTracer.streamClosed(Status.OK);
+        census.getServerTracerFactory().newServerStreamTracer(methodName, headers);
+    // Server tracer deserializes clientCtx from the headers, so that it records stats with the
+    // propagated tags.
+    Context serverContext = serverTracer.filterContext(Context.ROOT);
+    // It also put clientCtx in the Context seen by the call handler
+    assertEquals(clientCtx, CensusStreamTracerModule.STATS_CONTEXT_KEY.get(serverContext));
+
 
     // Verifies that the server tracer records the status with the propagated tag
+    serverTracer.streamClosed(Status.OK);
+
     StatsTestUtils.MetricsRecord serverRecord = statsCtxFactory.pollRecord();
     assertNotNull(serverRecord);
     assertNoClientContent(serverRecord);
@@ -229,7 +222,7 @@ public class CensusStreamTracerModuleTest {
     String methodName = MethodDescriptor.generateFullMethodName("Service1", "method4");
 
     ServerStreamTracer.Factory tracerFactory = census.getServerTracerFactory();
-    ServerStreamTracer tracer = tracerFactory.newServerStreamTracer(methodName);
+    ServerStreamTracer tracer = tracerFactory.newServerStreamTracer(methodName, new Metadata());
 
     tracer.inboundWireSize(34);
     tracer.inboundUncompressedSize(67);

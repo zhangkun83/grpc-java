@@ -36,7 +36,6 @@ package io.grpc;
  */
 @ExperimentalApi
 // TODO(zhangkun83): define thread-safety
-// TODO(zhangkun83): call interceptorsCalled()
 public abstract class StreamTracer {
   /**
    * Stream is closed.
