@@ -38,6 +38,7 @@ import javax.annotation.concurrent.ThreadSafe;
  */
 @ExperimentalApi
 @ThreadSafe
+// TODO(zhangkun83): add test to cover streamClosed() being called.
 public abstract class ClientStreamTracer extends StreamTracer {
   /**
    * Headers has been sent to the socket.

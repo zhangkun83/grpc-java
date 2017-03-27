@@ -1424,6 +1424,7 @@ public abstract class AbstractInteropTest {
           record.getMetricAsLongOrFail(RpcConstants.RPC_SERVER_UNCOMPRESSED_REQUEST_BYTES));
       assertEquals(uncompressedResponsesSize,
           record.getMetricAsLongOrFail(RpcConstants.RPC_SERVER_UNCOMPRESSED_RESPONSE_BYTES));
+      assertNotNull(record.getMetric(RpcConstants.RPC_SERVER_SERVER_LATENCY));
       // It's impossible to get the expected wire sizes because it may be compressed, so we just
       // check if they are recorded.
       assertNotNull(record.getMetric(RpcConstants.RPC_SERVER_REQUEST_BYTES));
@@ -1433,6 +1434,7 @@ public abstract class AbstractInteropTest {
           record.getMetricAsLongOrFail(RpcConstants.RPC_CLIENT_UNCOMPRESSED_REQUEST_BYTES));
       assertEquals(uncompressedResponsesSize,
           record.getMetricAsLongOrFail(RpcConstants.RPC_CLIENT_UNCOMPRESSED_RESPONSE_BYTES));
+      assertNotNull(record.getMetric(RpcConstants.RPC_CLIENT_ROUNDTRIP_LATENCY));
       assertNotNull(record.getMetric(RpcConstants.RPC_CLIENT_SERVER_ELAPSED_TIME));
       // It's impossible to get the expected wire sizes because it may be compressed, so we just
       // check if they are recorded.

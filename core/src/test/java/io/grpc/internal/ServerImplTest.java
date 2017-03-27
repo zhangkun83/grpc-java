@@ -141,7 +141,7 @@ public class ServerImplTest {
   private final ServerStreamTracer streamTracer = spy(new ServerStreamTracer() {
       @Override
       public <ReqT, RespT> Context filterContext(Context context) {
-        return context.withValue(SERVER_TRACER_ADDED_KEY, "tracer-added");
+        return context.withValue(SERVER_TRACER_ADDED_KEY, "context added by tracer");
       }
     });
   @Mock
@@ -433,7 +433,7 @@ public class ServerImplTest {
     verify(stream).getAuthority();
     Context callContext = callContextReference.get();
     assertNotNull(callContext);
-    assertEquals("tracer-added", SERVER_TRACER_ADDED_KEY.get(callContext));
+    assertEquals("context added by tracer", SERVER_TRACER_ADDED_KEY.get(callContext));
 
     String order = "Lots of pizza, please";
     streamListener.messageRead(STRING_MARSHALLER.stream(order));
