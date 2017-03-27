@@ -35,15 +35,25 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
+import static org.mockito.Matchers.any;
+import static org.mockito.Matchers.same;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.when;
 
 import com.google.instrumentation.stats.RpcConstants;
 import com.google.instrumentation.stats.StatsContext;
 import com.google.instrumentation.stats.StatsContextFactory;
 import com.google.instrumentation.stats.TagValue;
+import io.grpc.CallOptions;
+import io.grpc.Channel;
+import io.grpc.ClientCall;
+import io.grpc.ClientInterceptor;
 import io.grpc.ClientStreamTracer;
 import io.grpc.Context;
 import io.grpc.Metadata;
+import io.grpc.MethodDescriptor.MethodType;
 import io.grpc.MethodDescriptor;
 import io.grpc.ServerCall;
 import io.grpc.ServerCallHandler;
@@ -51,12 +61,15 @@ import io.grpc.ServerStreamTracer;
 import io.grpc.Status;
 import io.grpc.internal.testing.StatsTestUtils;
 import io.grpc.internal.testing.StatsTestUtils.FakeStatsContextFactory;
+import io.grpc.testing.TestMethodDescriptors;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
@@ -65,19 +78,37 @@ import org.mockito.MockitoAnnotations;
  */
 @RunWith(JUnit4.class)
 public class CensusStreamTracerModuleTest {
+  private static final CallOptions.Key<String> CUSTOM_OPTION =
+      CallOptions.Key.of("option1", "default");
+  private static final CallOptions CALL_OPTIONS =
+      CallOptions.DEFAULT.withOption(CUSTOM_OPTION, "customvalue");
+
   private final FakeClock fakeClock = new FakeClock();
   private final FakeStatsContextFactory statsCtxFactory = new FakeStatsContextFactory();
   private final CensusStreamTracerModule census =
       new CensusStreamTracerModule(statsCtxFactory, fakeClock.getStopwatchSupplier());
 
   @Mock
+  private Channel mockChannel;
+  @Mock
+  private ClientCall<Void, Void> mockClientCall;
+  @Mock
+  private ClientCall.Listener<Void> mockClientCallListener;
+  @Captor
+  private ArgumentCaptor<CallOptions> callOptionsCaptor;
+  @Captor
+  private ArgumentCaptor<ClientCall.Listener<Void>> clientCallListenerCaptor;
+  @Mock
   private ServerCall.Listener<String> mockServerCallListener;
   @Mock
   private ServerCall<String, String> mockServerCall;
 
   @Before
+  @SuppressWarnings("unchecked")
   public void setUp() {
     MockitoAnnotations.initMocks(this);
+    when(mockChannel.newCall(any(MethodDescriptor.class), any(CallOptions.class)))
+        .thenReturn(mockClientCall);
   }
 
   @After
@@ -86,6 +117,82 @@ public class CensusStreamTracerModuleTest {
     // These mocks are not stubbed, thus shouldn't be called.
     verifyNoMoreInteractions(mockServerCallListener);
     verifyNoMoreInteractions(mockServerCall);
+  }
+
+  @Test
+  public void clientInterceptorNoCustomTag() {
+    testClientInterceptor(false);
+  }
+
+  @Test
+  public void clientInterceptorCustomTag() {
+    testClientInterceptor(true);
+  }
+
+  private void testClientInterceptor(boolean customTag) {
+    String methodName = MethodDescriptor.generateFullMethodName("Service1", "method1");
+    ClientInterceptor interceptor = census.getClientInterceptor();
+    MethodDescriptor<Void, Void> method = MethodDescriptor.<Void, Void>newBuilder()
+        .setType(MethodType.UNARY)
+        .setFullMethodName(methodName)
+        .setRequestMarshaller(TestMethodDescriptors.voidMarshaller())
+        .setResponseMarshaller(TestMethodDescriptors.voidMarshaller())
+        .build();
+
+    ClientCall<Void, Void> call;
+    if (customTag) {
+      Context ctx =
+          Context.ROOT.withValue(
+              CensusStreamTracerModule.STATS_CONTEXT_KEY,
+              statsCtxFactory.getDefault().with(
+                  StatsTestUtils.EXTRA_TAG, TagValue.create("extra value")));
+      Context origCtx = ctx.attach();
+      try {
+         call = interceptor.interceptCall(method, CALL_OPTIONS, mockChannel);
+      } finally {
+        ctx.detach(origCtx);
+      }
+    } else {
+      assertNull(CensusStreamTracerModule.STATS_CONTEXT_KEY.get());
+      call = interceptor.interceptCall(method, CALL_OPTIONS, mockChannel);
+    }
+
+    // The interceptor adds tracer factory to CallOptions
+    verify(mockChannel).newCall(same(method), callOptionsCaptor.capture());
+    CallOptions capturedCallOptions = callOptionsCaptor.getValue();
+    assertEquals("customvalue", capturedCallOptions.getOption(CUSTOM_OPTION));
+    assertEquals(1, capturedCallOptions.getStreamTracerFactories().size());
+    assertTrue(
+        capturedCallOptions.getStreamTracerFactories().get(0)
+        instanceof CensusStreamTracerModule.ClientTracerFactory);
+
+    // Start the call
+    Metadata headers = new Metadata();
+    call.start(mockClientCallListener, headers);
+
+    verify(mockClientCall).start(clientCallListenerCaptor.capture(), same(headers));
+    assertNull(statsCtxFactory.pollRecord());
+
+    // Then listener receives onClose()
+    Status status = Status.CANCELLED.withDescription("I am just doing it");
+    Metadata trailers = new Metadata();
+    clientCallListenerCaptor.getValue().onClose(status, trailers);
+
+    // The intercepting listener will call callEnded() on ClientTracerFactory, which records to
+    // Census.
+    verify(mockClientCallListener).onClose(same(status), same(trailers));
+    StatsTestUtils.MetricsRecord record = statsCtxFactory.pollRecord();
+    assertNotNull(record);
+    TagValue methodTag = record.tags.get(RpcConstants.RPC_CLIENT_METHOD);
+    assertEquals(methodName, methodTag.toString());
+    TagValue statusTag = record.tags.get(RpcConstants.RPC_STATUS);
+    assertEquals(Status.Code.CANCELLED.toString(), statusTag.toString());
+    if (customTag) {
+      TagValue extraTag = record.tags.get(StatsTestUtils.EXTRA_TAG);
+      assertEquals("extra value", extraTag.toString());
+    } else {
+      assertNull(record.tags.get(StatsTestUtils.EXTRA_TAG));
+    }
   }
 
   @Test

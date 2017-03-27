@@ -197,6 +197,7 @@ final class CensusStreamTracerModule {
 
   private static final ClientTracer BLANK_CLIENT_TRACER = new ClientTracer();
 
+  @VisibleForTesting
   final class ClientTracerFactory extends ClientStreamTracer.Factory {
 
     private final String fullMethodName;
@@ -357,7 +358,6 @@ final class CensusStreamTracerModule {
     }
   }
 
-  // TODO(zhangkun83): add unit test
   private class CensusClientInterceptor implements ClientInterceptor {
     @Override
     public <ReqT, RespT> ClientCall<ReqT, RespT> interceptCall(

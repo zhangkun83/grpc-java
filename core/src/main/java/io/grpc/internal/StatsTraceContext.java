@@ -64,11 +64,12 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import javax.annotation.Nullable;
+import javax.annotation.concurrent.ThreadSafe;
 
 /**
  * The stats and tracing information for a stream.
  */
-// TODO(zhangkun83): thread-safety of this class
+@ThreadSafe
 public final class StatsTraceContext extends StreamTracer {
   public static final StatsTraceContext NOOP = new StatsTraceContext(new StreamTracer[0]);
 
@@ -76,6 +77,8 @@ public final class StatsTraceContext extends StreamTracer {
 
   public static StatsTraceContext newClientContext(CallOptions callOptions, Metadata headers) {
     List<ClientStreamTracer.Factory> factories = callOptions.getStreamTracerFactories();
+    // This array will be iterated multiple times per RPC. Use primitive array instead of Collection
+    // so that for-each doesn't create an Iterator every time.
     StreamTracer[] tracers = new StreamTracer[factories.size()];
     for (int i = 0; i < tracers.length; i++) {
       tracers[i] = factories.get(i).newClientStreamTracer(headers);

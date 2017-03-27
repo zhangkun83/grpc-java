@@ -31,11 +31,13 @@
 
 package io.grpc;
 
+import javax.annotation.concurrent.ThreadSafe;
+
 /**
  * {@link StreamTracer} for the client-side.
  */
 @ExperimentalApi
-// TODO(zhangkun83): define thread-safety
+@ThreadSafe
 public abstract class ClientStreamTracer extends StreamTracer {
   /**
    * Headers has been sent to the socket.

@@ -31,12 +31,13 @@
 
 package io.grpc;
 
+import javax.annotation.concurrent.ThreadSafe;
+
 /**
  * Listens to events on a stream to collect metrics.
  */
 @ExperimentalApi
-// TODO(zhangkun83): define thread-safety
-// TODO(zhangkun83): install all tracer interceptors in ServerImpl
+@ThreadSafe
 public abstract class ServerStreamTracer extends StreamTracer {
   /**
    * Called before the interceptors and the call handlers and make changes to the Context object

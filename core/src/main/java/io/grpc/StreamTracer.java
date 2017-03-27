@@ -31,11 +31,13 @@
 
 package io.grpc;
 
+import javax.annotation.concurrent.ThreadSafe;
+
 /**
  * Listens to events on a stream to collect metrics.
  */
 @ExperimentalApi
-// TODO(zhangkun83): define thread-safety
+@ThreadSafe
 public abstract class StreamTracer {
   /**
    * Stream is closed.
