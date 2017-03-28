@@ -105,7 +105,7 @@ public class MessageFramerTest {
     verify(sink).deliverFrame(toWriteBuffer(new byte[] {0, 0, 0, 0, 2, 3, 14}), false, true);
     assertEquals(1, allocator.allocCount);
     verifyNoMoreInteractions(sink);
-    checkStats(2, 2);
+    checkStats(1, 2, 2);
   }
 
   @Test
@@ -117,7 +117,7 @@ public class MessageFramerTest {
     verify(sink).deliverFrame(toWriteBuffer(new byte[] {3, 14}), false, true);
     assertEquals(2, allocator.allocCount);
     verifyNoMoreInteractions(sink);
-    checkStats(2, 2);
+    checkStats(1, 2, 2);
   }
 
   @Test
@@ -131,7 +131,7 @@ public class MessageFramerTest {
         toWriteBuffer(new byte[] {0, 0, 0, 0, 1, 3, 0, 0, 0, 0, 1, 14}), false, true);
     verifyNoMoreInteractions(sink);
     assertEquals(1, allocator.allocCount);
-    checkStats(2, 2);
+    checkStats(2, 2, 2);
   }
 
   @Test
@@ -143,7 +143,7 @@ public class MessageFramerTest {
         toWriteBuffer(new byte[] {0, 0, 0, 0, 7, 3, 14, 1, 5, 9, 2, 6}), true, true);
     verifyNoMoreInteractions(sink);
     assertEquals(1, allocator.allocCount);
-    checkStats(7, 7);
+    checkStats(1, 7, 7);
   }
 
   @Test
@@ -152,7 +152,7 @@ public class MessageFramerTest {
     verify(sink).deliverFrame(null, true, true);
     verifyNoMoreInteractions(sink);
     assertEquals(0, allocator.allocCount);
-    checkStats(0, 0);
+    checkStats(0, 0, 0);
   }
 
   @Test
@@ -168,7 +168,7 @@ public class MessageFramerTest {
     verify(sink).deliverFrame(toWriteBuffer(new byte[] {5}), false, true);
     verifyNoMoreInteractions(sink);
     assertEquals(2, allocator.allocCount);
-    checkStats(8, 8);
+    checkStats(1, 8, 8);
   }
 
   @Test
@@ -185,7 +185,7 @@ public class MessageFramerTest {
     verify(sink).deliverFrame(toWriteBufferWithMinSize(new byte[] {1, 3}, 12), false, true);
     verifyNoMoreInteractions(sink);
     assertEquals(2, allocator.allocCount);
-    checkStats(4, 4);
+    checkStats(2, 4, 4);
   }
 
   @Test
@@ -194,7 +194,7 @@ public class MessageFramerTest {
     framer.flush();
     verify(sink).deliverFrame(toWriteBuffer(new byte[] {0, 0, 0, 0, 0}), false, true);
     assertEquals(1, allocator.allocCount);
-    checkStats(0, 0);
+    checkStats(1, 0, 0);
   }
 
   @Test
@@ -205,7 +205,7 @@ public class MessageFramerTest {
     verify(sink).deliverFrame(toWriteBuffer(new byte[] {0, 0, 0, 0, 0}), false, true);
     // One alloc for the header
     assertEquals(1, allocator.allocCount);
-    checkStats(0, 0);
+    checkStats(1, 0, 0);
   }
 
   @Test
@@ -216,7 +216,7 @@ public class MessageFramerTest {
     verify(sink).deliverFrame(toWriteBuffer(new byte[] {0, 0, 0, 0, 2, 3, 14}), false, true);
     verifyNoMoreInteractions(sink);
     assertEquals(1, allocator.allocCount);
-    checkStats(2, 2);
+    checkStats(1, 2, 2);
   }
 
   @Test
@@ -236,7 +236,7 @@ public class MessageFramerTest {
     assertEquals(toWriteBuffer(data), buffer);
     verifyNoMoreInteractions(sink);
     assertEquals(1, allocator.allocCount);
-    checkStats(1000, 1000);
+    checkStats(1, 1000, 1000);
   }
 
   @Test
@@ -263,7 +263,7 @@ public class MessageFramerTest {
 
     verifyNoMoreInteractions(sink);
     assertEquals(3, allocator.allocCount);
-    checkStats(1000, 1000);
+    checkStats(1, 1000, 1000);
   }
 
   @Test
@@ -288,7 +288,7 @@ public class MessageFramerTest {
     assertTrue(length < 1000);
 
     assertEquals(frameCaptor.getAllValues().get(1).size(), length);
-    checkStats(length, 1000);
+    checkStats(1, length, 1000);
   }
 
   @Test
@@ -313,7 +313,7 @@ public class MessageFramerTest {
     assertEquals(1000, length);
 
     assertEquals(buffer.data.length - 5 , length);
-    checkStats(1000, 1000);
+    checkStats(1, 1000, 1000);
   }
 
   @Test
@@ -339,7 +339,7 @@ public class MessageFramerTest {
     assertEquals(1000, length);
 
     assertEquals(buffer.data.length - 5 , length);
-    checkStats(1000, 1000);
+    checkStats(1, 1000, 1000);
   }
 
   @Test
@@ -368,7 +368,7 @@ public class MessageFramerTest {
     writeKnownLength(framer, new byte[]{});
     framer.flush();
     verify(sink).deliverFrame(toWriteBuffer(new byte[] {0, 0, 0, 0, 0}), false, true);
-    checkStats(0, 0);
+    checkStats(1, 0, 0);
   }
 
   private static WritableBuffer toWriteBuffer(byte[] data) {
@@ -390,10 +390,11 @@ public class MessageFramerTest {
     // TODO(carl-mastrangelo): add framer.flush() here.
   }
 
-  private void checkStats(long wireBytesSent, long uncompressedBytesSent) {
+  private void checkStats(int messagesSent, long wireBytesSent, long uncompressedBytesSent) {
     long actualWireSize = 0;
     long actualUncompressedSize = 0;
 
+    verify(tracer, times(messagesSent)).outboundMessage();
     verify(tracer, atLeast(0)).outboundWireSize(wireSizeCaptor.capture());
     for (Long portion : wireSizeCaptor.getAllValues()) {
       actualWireSize += portion;

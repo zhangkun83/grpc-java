@@ -293,11 +293,9 @@ public class ManagedChannelImplTest {
     ConnectionClientTransport mockTransport = transportInfo.transport;
     verify(mockTransport).start(any(ManagedClientTransport.Listener.class));
     ManagedClientTransport.Listener transportListener = transportInfo.listener;
-    when(mockTransport.newStream(same(method), same(headers), same(CallOptions.DEFAULT),
-            any(StatsTraceContext.class)))
+    when(mockTransport.newStream(same(method), same(headers), same(CallOptions.DEFAULT)))
         .thenReturn(mockStream);
-    when(mockTransport.newStream(same(method), same(headers2), same(CallOptions.DEFAULT),
-            any(StatsTraceContext.class)))
+    when(mockTransport.newStream(same(method), same(headers2), same(CallOptions.DEFAULT)))
         .thenReturn(mockStream2);
     transportListener.transportReady();
     when(mockPicker.pickSubchannel(
@@ -313,16 +311,14 @@ public class ManagedChannelImplTest {
     verifyNoMoreInteractions(mockTransportFactory);
     call.start(mockCallListener, headers);
 
-    verify(mockTransport, never()).newStream(same(method), same(headers), same(CallOptions.DEFAULT),
-        any(StatsTraceContext.class));
+    verify(mockTransport, never())
+        .newStream(same(method), same(headers), same(CallOptions.DEFAULT));
 
     // Second RPC, will be assigned to the real transport
     ClientCall<String, Integer> call2 = channel.newCall(method, CallOptions.DEFAULT);
     call2.start(mockCallListener2, headers2);
-    verify(mockTransport).newStream(same(method), same(headers2), same(CallOptions.DEFAULT),
-        any(StatsTraceContext.class));
-    verify(mockTransport).newStream(same(method), same(headers2), same(CallOptions.DEFAULT),
-        any(StatsTraceContext.class));
+    verify(mockTransport).newStream(same(method), same(headers2), same(CallOptions.DEFAULT));
+    verify(mockTransport).newStream(same(method), same(headers2), same(CallOptions.DEFAULT));
     verify(mockStream2).start(any(ClientStreamListener.class));
 
     // Shutdown
@@ -367,8 +363,7 @@ public class ManagedChannelImplTest {
           .thenReturn(PickResult.withSubchannel(subchannel));
       helper.updatePicker(picker2);
       executor.runDueTasks();
-      verify(mockTransport).newStream(same(method), same(headers), same(CallOptions.DEFAULT),
-          any(StatsTraceContext.class));
+      verify(mockTransport).newStream(same(method), same(headers), same(CallOptions.DEFAULT));
       verify(mockStream).start(any(ClientStreamListener.class));
     }
 
@@ -448,8 +443,7 @@ public class ManagedChannelImplTest {
     MockClientTransportInfo transportInfo = transports.poll();
     ConnectionClientTransport mockTransport = transportInfo.transport;
     ManagedClientTransport.Listener transportListener = transportInfo.listener;
-    when(mockTransport.newStream(same(method), same(headers), any(CallOptions.class),
-            any(StatsTraceContext.class)))
+    when(mockTransport.newStream(same(method), same(headers), any(CallOptions.class)))
         .thenReturn(mockStream);
     transportListener.transportReady();
     when(mockPicker.pickSubchannel(any(PickSubchannelArgs.class)))
@@ -459,8 +453,7 @@ public class ManagedChannelImplTest {
 
     // Real streams are started in the call executor if they were previously buffered.
     assertEquals(1, callExecutor.runDueTasks());
-    verify(mockTransport).newStream(same(method), same(headers), same(options),
-        any(StatsTraceContext.class));
+    verify(mockTransport).newStream(same(method), same(headers), same(options));
     verify(mockStream).start(streamListenerCaptor.capture());
 
     // Call listener callbacks are also run in the call executor
@@ -591,8 +584,7 @@ public class ManagedChannelImplTest {
           .newClientTransport(same(goodAddress), any(String.class), any(String.class));
     MockClientTransportInfo goodTransportInfo = transports.poll();
     when(goodTransportInfo.transport.newStream(
-            any(MethodDescriptor.class), any(Metadata.class), any(CallOptions.class),
-            any(StatsTraceContext.class)))
+            any(MethodDescriptor.class), any(Metadata.class), any(CallOptions.class)))
         .thenReturn(mock(ClientStream.class));
 
     goodTransportInfo.listener.transportReady();
@@ -606,10 +598,10 @@ public class ManagedChannelImplTest {
     executor.runDueTasks();
 
     verify(goodTransportInfo.transport).newStream(same(method), same(headers),
-        same(CallOptions.DEFAULT), any(StatsTraceContext.class));
+        same(CallOptions.DEFAULT));
     // The bad transport was never used.
     verify(badTransportInfo.transport, times(0)).newStream(any(MethodDescriptor.class),
-        any(Metadata.class), any(CallOptions.class), any(StatsTraceContext.class));
+        any(Metadata.class), any(CallOptions.class));
   }
 
   /**
@@ -831,7 +823,7 @@ public class ManagedChannelImplTest {
     transportInfo.listener.transportReady();
     assertEquals(1, oobExecutor.runDueTasks());
     verify(transportInfo.transport).newStream(same(method), same(headers),
-        same(CallOptions.DEFAULT), any(StatsTraceContext.class));
+        same(CallOptions.DEFAULT));
 
     // The transport goes away
     transportInfo.listener.transportShutdown(Status.UNAVAILABLE);
@@ -1025,8 +1017,7 @@ public class ManagedChannelImplTest {
           return mock(ClientStream.class);
         }
       }).when(transport).newStream(
-          any(MethodDescriptor.class), any(Metadata.class), any(CallOptions.class),
-          any(StatsTraceContext.class));
+          any(MethodDescriptor.class), any(Metadata.class), any(CallOptions.class));
 
     verify(creds, never()).applyRequestMetadata(
         any(MethodDescriptor.class), any(Attributes.class), any(Executor.class),
@@ -1047,13 +1038,11 @@ public class ManagedChannelImplTest {
     assertEquals(SecurityLevel.NONE,
         attrsCaptor.getValue().get(CallCredentials.ATTR_SECURITY_LEVEL));
     verify(transport, never()).newStream(
-        any(MethodDescriptor.class), any(Metadata.class), any(CallOptions.class),
-        any(StatsTraceContext.class));
+        any(MethodDescriptor.class), any(Metadata.class), any(CallOptions.class));
 
     // newStream() is called after apply() is called
     applierCaptor.getValue().apply(new Metadata());
-    verify(transport).newStream(same(method), any(Metadata.class), same(callOptions),
-        any(StatsTraceContext.class));
+    verify(transport).newStream(same(method), any(Metadata.class), same(callOptions));
     assertEquals("testValue", testKey.get(newStreamContexts.poll()));
     // The context should not live beyond the scope of newStream() and applyRequestMetadata()
     assertNull(testKey.get());
@@ -1073,13 +1062,11 @@ public class ManagedChannelImplTest {
         attrsCaptor.getValue().get(CallCredentials.ATTR_SECURITY_LEVEL));
     // This is from the first call
     verify(transport).newStream(
-        any(MethodDescriptor.class), any(Metadata.class), any(CallOptions.class),
-        any(StatsTraceContext.class));
+        any(MethodDescriptor.class), any(Metadata.class), any(CallOptions.class));
 
     // Still, newStream() is called after apply() is called
     applierCaptor.getValue().apply(new Metadata());
-    verify(transport, times(2)).newStream(same(method), any(Metadata.class), same(callOptions),
-        any(StatsTraceContext.class));
+    verify(transport, times(2)).newStream(same(method), any(Metadata.class), same(callOptions));
     assertEquals("testValue", testKey.get(newStreamContexts.poll()));
 
     assertNull(testKey.get());

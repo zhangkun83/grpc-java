@@ -98,7 +98,7 @@ public class MessageDeframerTest {
     assertEquals(Bytes.asList(new byte[]{3, 14}), bytes(messages));
     verify(listener, atLeastOnce()).bytesRead(anyInt());
     verifyNoMoreInteractions(listener);
-    checkStats(2, 2);
+    checkStats(1, 2, 2);
   }
 
   @Test
@@ -112,7 +112,7 @@ public class MessageDeframerTest {
     verify(listener, atLeastOnce()).bytesRead(anyInt());
     assertEquals(Bytes.asList(new byte[] {14, 15}), bytes(streams.get(1)));
     verifyNoMoreInteractions(listener);
-    checkStats(3, 3);
+    checkStats(2, 3, 3);
   }
 
   @Test
@@ -124,7 +124,7 @@ public class MessageDeframerTest {
     verify(listener).endOfStream();
     verify(listener, atLeastOnce()).bytesRead(anyInt());
     verifyNoMoreInteractions(listener);
-    checkStats(1, 1);
+    checkStats(1, 1, 1);
   }
 
   @Test
@@ -132,7 +132,7 @@ public class MessageDeframerTest {
     deframer.deframe(buffer(new byte[0]), true);
     verify(listener).endOfStream();
     verifyNoMoreInteractions(listener);
-    checkStats(0, 0);
+    checkStats(0, 0, 0);
   }
 
   @Test
@@ -147,7 +147,7 @@ public class MessageDeframerTest {
     verify(listener, atLeastOnce()).bytesRead(anyInt());
     assertTrue(deframer.isStalled());
     verifyNoMoreInteractions(listener);
-    checkStats(7, 7);
+    checkStats(1, 7, 7);
   }
 
   @Test
@@ -163,7 +163,7 @@ public class MessageDeframerTest {
     verify(listener, atLeastOnce()).bytesRead(anyInt());
     assertTrue(deframer.isStalled());
     verifyNoMoreInteractions(listener);
-    checkStats(1, 1);
+    checkStats(1, 1, 1);
   }
 
   @Test
@@ -174,7 +174,7 @@ public class MessageDeframerTest {
     assertEquals(Bytes.asList(), bytes(messages));
     verify(listener, atLeastOnce()).bytesRead(anyInt());
     verifyNoMoreInteractions(listener);
-    checkStats(0, 0);
+    checkStats(1, 0, 0);
   }
 
   @Test
@@ -186,7 +186,7 @@ public class MessageDeframerTest {
     assertEquals(Bytes.asList(new byte[1000]), bytes(messages));
     verify(listener, atLeastOnce()).bytesRead(anyInt());
     verifyNoMoreInteractions(listener);
-    checkStats(1000, 1000);
+    checkStats(1, 1000, 1000);
   }
 
   @Test
@@ -200,7 +200,7 @@ public class MessageDeframerTest {
     verify(listener).endOfStream();
     verify(listener, atLeastOnce()).bytesRead(anyInt());
     verifyNoMoreInteractions(listener);
-    checkStats(1, 1);
+    checkStats(1, 1, 1);
   }
 
   @Test
@@ -217,7 +217,7 @@ public class MessageDeframerTest {
     assertEquals(Bytes.asList(new byte[1000]), bytes(messages));
     verify(listener, atLeastOnce()).bytesRead(anyInt());
     verifyNoMoreInteractions(listener);
-    checkStats(payload.length, 1000);
+    checkStats(1, payload.length, 1000);
   }
 
   @Test
@@ -250,7 +250,7 @@ public class MessageDeframerTest {
 
     stream.close();
     // SizeEnforcingInputStream only reports uncompressed bytes
-    checkStats(0, 3);
+    checkStats(0, 0, 3);
   }
 
   @Test
@@ -263,7 +263,7 @@ public class MessageDeframerTest {
 
     stream.close();
     // SizeEnforcingInputStream only reports uncompressed bytes
-    checkStats(0, 3);
+    checkStats(0, 0, 3);
   }
 
   @Test
@@ -294,7 +294,7 @@ public class MessageDeframerTest {
     assertEquals(3, read);
     stream.close();
     // SizeEnforcingInputStream only reports uncompressed bytes
-    checkStats(0, 3);
+    checkStats(0, 0, 3);
   }
 
   @Test
@@ -309,7 +309,7 @@ public class MessageDeframerTest {
     assertEquals(3, read);
     stream.close();
     // SizeEnforcingInputStream only reports uncompressed bytes
-    checkStats(0, 3);
+    checkStats(0, 0, 3);
   }
 
   @Test
@@ -341,7 +341,7 @@ public class MessageDeframerTest {
 
     stream.close();
     // SizeEnforcingInputStream only reports uncompressed bytes
-    checkStats(0, 3);
+    checkStats(0, 0, 3);
   }
 
   @Test
@@ -355,7 +355,7 @@ public class MessageDeframerTest {
     assertEquals(3, skipped);
     stream.close();
     // SizeEnforcingInputStream only reports uncompressed bytes
-    checkStats(0, 3);
+    checkStats(0, 0, 3);
   }
 
   @Test
@@ -389,13 +389,15 @@ public class MessageDeframerTest {
     assertEquals(2, skipped);
     stream.close();
     // SizeEnforcingInputStream only reports uncompressed bytes
-    checkStats(0, 3);
+    checkStats(0, 0, 3);
   }
 
-  private void checkStats(long wireBytesReceived, long uncompressedBytesReceived) {
+  private void checkStats(
+      int messagesReceived, long wireBytesReceived, long uncompressedBytesReceived) {
     long actualWireSize = 0;
     long actualUncompressedSize = 0;
 
+    verify(tracer, times(messagesReceived)).inboundMessage();
     verify(tracer, atLeast(0)).inboundWireSize(wireSizeCaptor.capture());
     for (Long portion : wireSizeCaptor.getAllValues()) {
       actualWireSize += portion;

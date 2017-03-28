@@ -89,6 +89,11 @@ public class OkHttpTransportTest extends AbstractTransportTest {
         null /* agent */);
   }
 
+  @Override
+  protected boolean statsRecorded() {
+    return true;
+  }
+
   // TODO(ejona): Flaky/Broken
   @Test
   @Ignore

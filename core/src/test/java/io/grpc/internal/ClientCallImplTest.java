@@ -122,11 +122,7 @@ public class ClientCallImplTest {
   @Captor private ArgumentCaptor<Status> statusCaptor;
 
   @Mock
-  private ClientStreamTracer streamTracer;
-  @Mock
   private ClientStreamTracer.Factory streamTracerFactory;
-  @Captor
-  private ArgumentCaptor<StatsTraceContext> statsTraceCtxCaptor;
 
   @Mock
   private ClientTransport transport;
@@ -152,15 +148,16 @@ public class ClientCallImplTest {
   public void setUp() {
     MockitoAnnotations.initMocks(this);
     when(provider.get(any(PickSubchannelArgsImpl.class))).thenReturn(transport);
-    when(transport.newStream(any(MethodDescriptor.class), any(Metadata.class),
-            any(CallOptions.class), any(StatsTraceContext.class))).thenReturn(stream);
-    when(streamTracerFactory.newClientStreamTracer(any(Metadata.class))).thenReturn(streamTracer);
+    when(transport.newStream(
+            any(MethodDescriptor.class), any(Metadata.class), any(CallOptions.class)))
+        .thenReturn(stream);
     baseCallOptions = CallOptions.DEFAULT.withStreamTracerFactory(streamTracerFactory);
   }
 
   @After
   public void tearDown() {
     Context.ROOT.attach();
+    verifyZeroInteractions(streamTracerFactory);
   }
 
   @Test
@@ -181,7 +178,6 @@ public class ClientCallImplTest {
     executor.release();
 
     verify(callListener).onClose(same(status), Matchers.isA(Metadata.class));
-    verify(streamTracer).streamClosed(same(status));
   }
 
   @Test
@@ -216,7 +212,6 @@ public class ClientCallImplTest {
     assertThat(callListenerStatus.getCode()).isEqualTo(Status.Code.CANCELLED);
     assertThat(callListenerStatus.getCause()).isSameAs(failure);
     verify(stream).cancel(same(callListenerStatus));
-    verify(streamTracer).streamClosed(same(callListenerStatus));
   }
 
   @Test
@@ -250,7 +245,6 @@ public class ClientCallImplTest {
     assertThat(callListenerStatus.getCode()).isEqualTo(Status.Code.CANCELLED);
     assertThat(callListenerStatus.getCause()).isSameAs(failure);
     verify(stream).cancel(same(callListenerStatus));
-    verify(streamTracer).streamClosed(same(callListenerStatus));
   }
 
   @Test
@@ -284,7 +278,6 @@ public class ClientCallImplTest {
     assertThat(callListenerStatus.getCode()).isEqualTo(Status.Code.CANCELLED);
     assertThat(callListenerStatus.getCause()).isSameAs(failure);
     verify(stream).cancel(same(callListenerStatus));
-    verify(streamTracer).streamClosed(same(callListenerStatus));
   }
 
   @Test
@@ -300,8 +293,7 @@ public class ClientCallImplTest {
     call.start(callListener, new Metadata());
 
     ArgumentCaptor<Metadata> metadataCaptor = ArgumentCaptor.forClass(Metadata.class);
-    verify(transport).newStream(eq(method), metadataCaptor.capture(), same(baseCallOptions),
-        any(StatsTraceContext.class));
+    verify(transport).newStream(eq(method), metadataCaptor.capture(), same(baseCallOptions));
     Metadata actual = metadataCaptor.getValue();
 
     // there should only be one.
@@ -338,9 +330,7 @@ public class ClientCallImplTest {
 
     call.start(callListener, metadata);
 
-    verify(transport).newStream(same(method), same(metadata), same(callOptions),
-        statsTraceCtxCaptor.capture());
-    assertThat(statsTraceCtxCaptor.getValue().getTracersForTest()).containsExactly(streamTracer);
+    verify(transport).newStream(same(method), same(metadata), same(callOptions));
   }
 
   @Test
@@ -572,7 +562,6 @@ public class ClientCallImplTest {
 
     // Stream should never be created.
     verifyZeroInteractions(transport);
-    verifyZeroInteractions(streamTracerFactory);
 
     try {
       call.sendMessage(null);
@@ -598,7 +587,6 @@ public class ClientCallImplTest {
     verify(callListener, timeout(1000)).onClose(statusCaptor.capture(), any(Metadata.class));
     assertEquals(Status.Code.DEADLINE_EXCEEDED, statusCaptor.getValue().getCode());
     verifyZeroInteractions(provider);
-    verifyZeroInteractions(streamTracerFactory);
   }
 
   @Test

@@ -131,8 +131,7 @@ class InProcessTransport implements ServerTransport, ConnectionClientTransport {
 
   @Override
   public synchronized ClientStream newStream(
-      final MethodDescriptor<?, ?> method, final Metadata headers, final CallOptions callOptions,
-      StatsTraceContext clientStatsTraceContext) {
+      final MethodDescriptor<?, ?> method, final Metadata headers, final CallOptions callOptions) {
     if (shutdownStatus != null) {
       final Status capturedStatus = shutdownStatus;
       return new NoopClientStream() {
@@ -150,7 +149,7 @@ class InProcessTransport implements ServerTransport, ConnectionClientTransport {
   @Override
   public synchronized ClientStream newStream(
       final MethodDescriptor<?, ?> method, final Metadata headers) {
-    return newStream(method, headers, CallOptions.DEFAULT, StatsTraceContext.NOOP);
+    return newStream(method, headers, CallOptions.DEFAULT);
   }
 
   @Override

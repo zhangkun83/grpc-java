@@ -62,4 +62,9 @@ public class InProcessTransportTest extends AbstractTransportTest {
   protected ManagedClientTransport newClientTransport(InternalServer server) {
     return new InProcessTransport(transportName, testAuthority(server));
   }
+
+  @Override
+  protected boolean statsRecorded() {
+    return false;
+  }
 }

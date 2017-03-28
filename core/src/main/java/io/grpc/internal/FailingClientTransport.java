@@ -53,14 +53,14 @@ class FailingClientTransport implements ClientTransport {
   }
 
   @Override
-  public ClientStream newStream(MethodDescriptor<?, ?> method, Metadata headers,
-      CallOptions callOptions, StatsTraceContext statsTraceCtx) {
+  public ClientStream newStream(
+      MethodDescriptor<?, ?> method, Metadata headers, CallOptions callOptions) {
     return new FailingClientStream(error);
   }
 
   @Override
   public ClientStream newStream(MethodDescriptor<?, ?> method, Metadata headers) {
-    return newStream(method, headers, CallOptions.DEFAULT, StatsTraceContext.NOOP);
+    return newStream(method, headers, CallOptions.DEFAULT);
   }
 
   @Override

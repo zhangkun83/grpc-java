@@ -126,6 +126,7 @@ public class MessageFramer {
    */
   public void writePayload(InputStream message) {
     verifyNotClosed();
+    statsTraceCtx.outboundMessage();
     boolean compressed = messageCompression && compressor != Codec.Identity.NONE;
     int written = -1;
     int messageLength = -2;

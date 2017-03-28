@@ -348,6 +348,7 @@ public class MessageDeframer implements Closeable {
               debugString, requiredLength, maxInboundMessageSize)).asRuntimeException();
     }
 
+    statsTraceCtx.inboundMessage();
     // Continue reading the frame body.
     state = State.BODY;
   }

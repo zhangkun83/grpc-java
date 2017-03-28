@@ -212,7 +212,6 @@ final class ClientCallImpl<ReqT, RespT> extends ClientCall<ReqT, RespT>
 
     Deadline effectiveDeadline = effectiveDeadline();
     boolean deadlineExceeded = effectiveDeadline != null && effectiveDeadline.isExpired();
-    StatsTraceContext statsTraceCtx;
     if (!deadlineExceeded) {
       updateTimeoutHeaders(effectiveDeadline, callOptions.getDeadline(),
           context.getDeadline(), headers);
@@ -220,13 +219,11 @@ final class ClientCallImpl<ReqT, RespT> extends ClientCall<ReqT, RespT>
           new PickSubchannelArgsImpl(method, headers, callOptions));
       Context origContext = context.attach();
       try {
-        statsTraceCtx = StatsTraceContext.newClientContext(callOptions, headers);
-        stream = transport.newStream(method, headers, callOptions, statsTraceCtx);
+        stream = transport.newStream(method, headers, callOptions);
       } finally {
         context.detach(origContext);
       }
     } else {
-      statsTraceCtx = StatsTraceContext.NOOP;
       stream = new FailingClientStream(DEADLINE_EXCEEDED);
     }
 
@@ -240,7 +237,7 @@ final class ClientCallImpl<ReqT, RespT> extends ClientCall<ReqT, RespT>
       stream.setMaxOutboundMessageSize(callOptions.getMaxOutboundMessageSize());
     }
     stream.setCompressor(compressor);
-    stream.start(new ClientStreamListenerImpl(observer, statsTraceCtx));
+    stream.start(new ClientStreamListenerImpl(observer));
 
     // Delay any sources of cancellation after start(), because most of the transports are broken if
     // they receive cancel before start. Issue #1343 has more details
@@ -424,19 +421,15 @@ final class ClientCallImpl<ReqT, RespT> extends ClientCall<ReqT, RespT>
   }
 
   private void closeObserver(Listener<RespT> observer, Status status, Metadata trailers) {
-    // TODO(zhangkun83): move it to an interceptor
-    //statsTraceCtx.callEnded(status);
     observer.onClose(status, trailers);
   }
 
   private class ClientStreamListenerImpl implements ClientStreamListener {
     private final Listener<RespT> observer;
-    private final StatsTraceContext statsTraceCtx;
     private boolean closed;
 
-    public ClientStreamListenerImpl(Listener<RespT> observer, StatsTraceContext statsTraceCtx) {
+    public ClientStreamListenerImpl(Listener<RespT> observer) {
       this.observer = Preconditions.checkNotNull(observer, "observer");
-      this.statsTraceCtx = Preconditions.checkNotNull(statsTraceCtx, "statsTraceCtx");
     }
 
     @Override
@@ -514,7 +507,6 @@ final class ClientCallImpl<ReqT, RespT> extends ClientCall<ReqT, RespT>
       closed = true;
       cancelListenersShouldBeRemoved = true;
       try {
-        statsTraceCtx.streamClosed(status);
         closeObserver(observer, status, trailers);
       } finally {
         removeContextListenerAndCancelDeadlineFuture();
