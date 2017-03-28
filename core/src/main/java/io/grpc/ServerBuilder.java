@@ -97,6 +97,16 @@ public abstract class ServerBuilder<T extends ServerBuilder<T>> {
   }
 
   /**
+   * Adds a {@link ServerStreamTracer.Factory} to measure server-side traffic.  The order of
+   * factories being added is the order they will be executed.
+   */
+  // TODO(zhangkun83): assign an issue to new experimental APIs
+  @ExperimentalApi
+  public T addStreamTracerFactory(ServerStreamTracer.Factory factory) {
+    throw new UnsupportedOperationException();
+  }
+
+  /**
    * Sets a fallback handler registry that will be looked up in if a method is not found in the
    * primary registry.
    */

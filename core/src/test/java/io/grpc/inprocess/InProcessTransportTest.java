@@ -64,7 +64,9 @@ public class InProcessTransportTest extends AbstractTransportTest {
   }
 
   @Override
-  protected boolean statsRecorded() {
+  protected boolean clientStatsRecorded() {
+    // TODO(zhangkun83): InProcessTransport doesn't record metrics for now
+    // (https://github.com/grpc/grpc-java/issues/2284)
     return false;
   }
 }

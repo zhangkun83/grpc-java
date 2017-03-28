@@ -87,6 +87,9 @@ public abstract class AbstractServerImplBuilder<T extends AbstractServerImplBuil
   private final List<InternalNotifyOnServerBuild> notifyOnBuildList =
       new ArrayList<InternalNotifyOnServerBuild>();
 
+  private final List<ServerStreamTracer.Factory> streamTracerFactories =
+      new ArrayList<ServerStreamTracer.Factory>();
+
   @Nullable
   private HandlerRegistry fallbackRegistry;
 
@@ -134,6 +137,12 @@ public abstract class AbstractServerImplBuilder<T extends AbstractServerImplBuil
   }
 
   @Override
+  public final T addStreamTracerFactory(ServerStreamTracer.Factory factory) {
+    streamTracerFactories.add(checkNotNull(factory, "factory"));
+    return thisT();
+  }
+
+  @Override
   public final T fallbackHandlerRegistry(HandlerRegistry registry) {
     this.fallbackRegistry = registry;
     return thisT();
@@ -165,12 +174,10 @@ public abstract class AbstractServerImplBuilder<T extends AbstractServerImplBuil
     io.grpc.internal.InternalServer transportServer = buildTransportServer();
     StatsContextFactory statsFactory =
         this.statsFactory != null ? this.statsFactory : Stats.getStatsContextFactory();
-    // TODO(zhangkun83): add a setter for the factories
-    List<ServerStreamTracer.Factory> streamTracerFactories = Collections.emptyList();
     if (statsFactory != null) {
       CensusStreamTracerModule census =
           new CensusStreamTracerModule(statsFactory, GrpcUtil.STOPWATCH_SUPPLIER);
-      streamTracerFactories = Arrays.asList(census.getServerTracerFactory());
+      streamTracerFactories.add(0, census.getServerTracerFactory());
     }
     ServerImpl server = new ServerImpl(getExecutorPool(),
         SharedResourcePool.forResource(GrpcUtil.TIMER_SERVICE), registryBuilder.build(),

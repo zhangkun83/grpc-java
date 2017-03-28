@@ -92,7 +92,7 @@ public class NettyTransportTest extends AbstractTransportTest {
   }
 
   @Override
-  protected boolean statsRecorded() {
+  protected boolean clientStatsRecorded() {
     return true;
   }
 
