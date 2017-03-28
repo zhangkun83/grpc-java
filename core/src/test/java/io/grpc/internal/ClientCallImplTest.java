@@ -146,6 +146,8 @@ public class ClientCallImplTest {
   @Captor
   private ArgumentCaptor<Status> statusArgumentCaptor;
 
+  private CallOptions baseCallOptions;
+
   @Before
   public void setUp() {
     MockitoAnnotations.initMocks(this);
@@ -153,6 +155,7 @@ public class ClientCallImplTest {
     when(transport.newStream(any(MethodDescriptor.class), any(Metadata.class),
             any(CallOptions.class), any(StatsTraceContext.class))).thenReturn(stream);
     when(streamTracerFactory.newClientStreamTracer(any(Metadata.class))).thenReturn(streamTracer);
+    baseCallOptions = CallOptions.DEFAULT.withStreamTracerFactory(streamTracerFactory);
   }
 
   @After
@@ -166,7 +169,7 @@ public class ClientCallImplTest {
     ClientCallImpl<Void, Void> call = new ClientCallImpl<Void, Void>(
         method,
         executor,
-        CallOptions.DEFAULT,
+        baseCallOptions,
         provider,
         deadlineCancellationExecutor);
     call.start(callListener, new Metadata());
@@ -177,8 +180,8 @@ public class ClientCallImplTest {
     streamListener.closed(status , new Metadata());
     executor.release();
 
-    verify(callListener).onClose(statusArgumentCaptor.capture(), Matchers.isA(Metadata.class));
-    assertThat(statusArgumentCaptor.getValue()).isSameAs(status);
+    verify(callListener).onClose(same(status), Matchers.isA(Metadata.class));
+    verify(streamTracer).streamClosed(same(status));
   }
 
   @Test
@@ -187,7 +190,7 @@ public class ClientCallImplTest {
     ClientCallImpl<Void, Void> call = new ClientCallImpl<Void, Void>(
         method,
         executor,
-        CallOptions.DEFAULT,
+        baseCallOptions,
         provider,
         deadlineCancellationExecutor);
     call.start(callListener, new Metadata());
@@ -209,9 +212,11 @@ public class ClientCallImplTest {
     executor.release();
 
     verify(callListener).onClose(statusArgumentCaptor.capture(), Matchers.isA(Metadata.class));
-    assertThat(statusArgumentCaptor.getValue().getCode()).isEqualTo(Status.Code.CANCELLED);
-    assertThat(statusArgumentCaptor.getValue().getCause()).isSameAs(failure);
-    verify(stream).cancel(statusArgumentCaptor.getValue());
+    Status callListenerStatus = statusArgumentCaptor.getValue();
+    assertThat(callListenerStatus.getCode()).isEqualTo(Status.Code.CANCELLED);
+    assertThat(callListenerStatus.getCause()).isSameAs(failure);
+    verify(stream).cancel(same(callListenerStatus));
+    verify(streamTracer).streamClosed(same(callListenerStatus));
   }
 
   @Test
@@ -220,7 +225,7 @@ public class ClientCallImplTest {
     ClientCallImpl<Void, Void> call = new ClientCallImpl<Void, Void>(
         method,
         executor,
-        CallOptions.DEFAULT,
+        baseCallOptions,
         provider,
         deadlineCancellationExecutor);
     call.start(callListener, new Metadata());
@@ -241,9 +246,11 @@ public class ClientCallImplTest {
     executor.release();
 
     verify(callListener).onClose(statusArgumentCaptor.capture(), Matchers.isA(Metadata.class));
-    assertThat(statusArgumentCaptor.getValue().getCode()).isEqualTo(Status.Code.CANCELLED);
-    assertThat(statusArgumentCaptor.getValue().getCause()).isSameAs(failure);
-    verify(stream).cancel(statusArgumentCaptor.getValue());
+    Status callListenerStatus = statusArgumentCaptor.getValue();
+    assertThat(callListenerStatus.getCode()).isEqualTo(Status.Code.CANCELLED);
+    assertThat(callListenerStatus.getCause()).isSameAs(failure);
+    verify(stream).cancel(same(callListenerStatus));
+    verify(streamTracer).streamClosed(same(callListenerStatus));
   }
 
   @Test
@@ -252,7 +259,7 @@ public class ClientCallImplTest {
     ClientCallImpl<Void, Void> call = new ClientCallImpl<Void, Void>(
         method,
         executor,
-        CallOptions.DEFAULT,
+        baseCallOptions,
         provider,
         deadlineCancellationExecutor);
     call.start(callListener, new Metadata());
@@ -273,9 +280,11 @@ public class ClientCallImplTest {
     executor.release();
 
     verify(callListener).onClose(statusArgumentCaptor.capture(), Matchers.isA(Metadata.class));
-    assertThat(statusArgumentCaptor.getValue().getCode()).isEqualTo(Status.Code.CANCELLED);
-    assertThat(statusArgumentCaptor.getValue().getCause()).isSameAs(failure);
-    verify(stream).cancel(statusArgumentCaptor.getValue());
+    Status callListenerStatus = statusArgumentCaptor.getValue();
+    assertThat(callListenerStatus.getCode()).isEqualTo(Status.Code.CANCELLED);
+    assertThat(callListenerStatus.getCause()).isSameAs(failure);
+    verify(stream).cancel(same(callListenerStatus));
+    verify(streamTracer).streamClosed(same(callListenerStatus));
   }
 
   @Test
@@ -283,7 +292,7 @@ public class ClientCallImplTest {
     ClientCallImpl<Void, Void> call = new ClientCallImpl<Void, Void>(
         method,
         MoreExecutors.directExecutor(),
-        CallOptions.DEFAULT,
+        baseCallOptions,
         provider,
         deadlineCancellationExecutor)
             .setDecompressorRegistry(decompressorRegistry);
@@ -291,7 +300,7 @@ public class ClientCallImplTest {
     call.start(callListener, new Metadata());
 
     ArgumentCaptor<Metadata> metadataCaptor = ArgumentCaptor.forClass(Metadata.class);
-    verify(transport).newStream(eq(method), metadataCaptor.capture(), same(CallOptions.DEFAULT),
+    verify(transport).newStream(eq(method), metadataCaptor.capture(), same(baseCallOptions),
         any(StatsTraceContext.class));
     Metadata actual = metadataCaptor.getValue();
 
@@ -306,7 +315,7 @@ public class ClientCallImplTest {
     ClientCallImpl<Void, Void> call = new ClientCallImpl<Void, Void>(
         method,
         MoreExecutors.directExecutor(),
-        CallOptions.DEFAULT.withAuthority("overridden-authority"),
+        baseCallOptions.withAuthority("overridden-authority"),
         provider,
         deadlineCancellationExecutor)
             .setDecompressorRegistry(decompressorRegistry);
@@ -317,9 +326,7 @@ public class ClientCallImplTest {
 
   @Test
   public void callOptionsPropagatedToTransport() {
-    final CallOptions callOptions =
-        CallOptions.DEFAULT.withAuthority("dummy_value")
-            .withStreamTracerFactory(streamTracerFactory);
+    final CallOptions callOptions = baseCallOptions.withAuthority("dummy_value");
     final ClientCallImpl<Void, Void> call = new ClientCallImpl<Void, Void>(
         method,
         MoreExecutors.directExecutor(),
@@ -342,7 +349,7 @@ public class ClientCallImplTest {
         method,
         MoreExecutors.directExecutor(),
         // Don't provide an authority
-        CallOptions.DEFAULT,
+        baseCallOptions,
         provider,
         deadlineCancellationExecutor)
             .setDecompressorRegistry(decompressorRegistry);
@@ -437,7 +444,7 @@ public class ClientCallImplTest {
     ClientCallImpl<Void, Void> call = new ClientCallImpl<Void, Void>(
         method,
         new SerializingExecutor(Executors.newSingleThreadExecutor()),
-        CallOptions.DEFAULT,
+        baseCallOptions,
         provider,
         deadlineCancellationExecutor)
             .setDecompressorRegistry(decompressorRegistry);
@@ -510,7 +517,7 @@ public class ClientCallImplTest {
     ClientCallImpl<Void, Void> call = new ClientCallImpl<Void, Void>(
         method,
         new SerializingExecutor(Executors.newSingleThreadExecutor()),
-        CallOptions.DEFAULT,
+        baseCallOptions,
         provider,
         deadlineCancellationExecutor)
             .setDecompressorRegistry(decompressorRegistry);
@@ -523,9 +530,8 @@ public class ClientCallImplTest {
     cancellableContext.cancel(t);
 
     verify(stream, times(1)).cancel(statusArgumentCaptor.capture());
-
-    verify(stream, times(1)).cancel(statusCaptor.capture());
-    assertEquals(Status.Code.CANCELLED, statusCaptor.getValue().getCode());
+    Status streamStatus = statusArgumentCaptor.getValue();
+    assertEquals(Status.Code.CANCELLED, streamStatus.getCode());
   }
 
   @Test
@@ -539,7 +545,7 @@ public class ClientCallImplTest {
     ClientCallImpl<Void, Void> call = new ClientCallImpl<Void, Void>(
         method,
         new SerializingExecutor(Executors.newSingleThreadExecutor()),
-        CallOptions.DEFAULT,
+        baseCallOptions,
         provider,
         deadlineCancellationExecutor)
         .setDecompressorRegistry(decompressorRegistry);
@@ -566,6 +572,7 @@ public class ClientCallImplTest {
 
     // Stream should never be created.
     verifyZeroInteractions(transport);
+    verifyZeroInteractions(streamTracerFactory);
 
     try {
       call.sendMessage(null);
@@ -577,7 +584,7 @@ public class ClientCallImplTest {
 
   @Test
   public void deadlineExceededBeforeCallStarted() {
-    CallOptions callOptions = CallOptions.DEFAULT.withDeadlineAfter(0, TimeUnit.SECONDS);
+    CallOptions callOptions = baseCallOptions.withDeadlineAfter(0, TimeUnit.SECONDS);
     fakeClock.forwardTime(System.nanoTime(), TimeUnit.NANOSECONDS);
     ClientCallImpl<Void, Void> call = new ClientCallImpl<Void, Void>(
         method,
@@ -591,6 +598,7 @@ public class ClientCallImplTest {
     verify(callListener, timeout(1000)).onClose(statusCaptor.capture(), any(Metadata.class));
     assertEquals(Status.Code.DEADLINE_EXCEEDED, statusCaptor.getValue().getCode());
     verifyZeroInteractions(provider);
+    verifyZeroInteractions(streamTracerFactory);
   }
 
   @Test
@@ -603,7 +611,7 @@ public class ClientCallImplTest {
     ClientCallImpl<Void, Void> call = new ClientCallImpl<Void, Void>(
         method,
         MoreExecutors.directExecutor(),
-        CallOptions.DEFAULT,
+        baseCallOptions,
         provider,
         deadlineCancellationExecutor);
 
@@ -626,7 +634,7 @@ public class ClientCallImplTest {
         deadlineCancellationExecutor);
     context.attach();
 
-    CallOptions callOpts = CallOptions.DEFAULT.withDeadlineAfter(2, TimeUnit.SECONDS);
+    CallOptions callOpts = baseCallOptions.withDeadlineAfter(2, TimeUnit.SECONDS);
     ClientCallImpl<Void, Void> call = new ClientCallImpl<Void, Void>(
         method,
         MoreExecutors.directExecutor(),
@@ -653,7 +661,7 @@ public class ClientCallImplTest {
         deadlineCancellationExecutor);
     context.attach();
 
-    CallOptions callOpts = CallOptions.DEFAULT.withDeadlineAfter(1, TimeUnit.SECONDS);
+    CallOptions callOpts = baseCallOptions.withDeadlineAfter(1, TimeUnit.SECONDS);
     ClientCallImpl<Void, Void> call = new ClientCallImpl<Void, Void>(
         method,
         MoreExecutors.directExecutor(),
@@ -682,7 +690,7 @@ public class ClientCallImplTest {
     ClientCallImpl<Void, Void> call = new ClientCallImpl<Void, Void>(
         method,
         MoreExecutors.directExecutor(),
-        CallOptions.DEFAULT.withDeadline(Deadline.after(1, TimeUnit.SECONDS)),
+        baseCallOptions.withDeadline(Deadline.after(1, TimeUnit.SECONDS)),
         provider,
         deadlineCancellationExecutor);
 
@@ -705,7 +713,7 @@ public class ClientCallImplTest {
     ClientCallImpl<Void, Void> call = new ClientCallImpl<Void, Void>(
         method,
         MoreExecutors.directExecutor(),
-        CallOptions.DEFAULT,
+        baseCallOptions,
         provider,
         deadlineCancellationExecutor);
 
@@ -724,7 +732,7 @@ public class ClientCallImplTest {
     ClientCallImpl<Void, Void> call = new ClientCallImpl<Void, Void>(
         method,
         MoreExecutors.directExecutor(),
-        CallOptions.DEFAULT.withDeadline(Deadline.after(1, TimeUnit.SECONDS)),
+        baseCallOptions.withDeadline(Deadline.after(1, TimeUnit.SECONDS)),
         provider,
         deadlineCancellationExecutor);
     call.start(callListener, new Metadata());
@@ -747,7 +755,7 @@ public class ClientCallImplTest {
     ClientCallImpl<Void, Void> call = new ClientCallImpl<Void, Void>(
         method,
         MoreExecutors.directExecutor(),
-        CallOptions.DEFAULT,
+        baseCallOptions,
         provider,
         deadlineCancellationExecutor);
 
@@ -763,7 +771,7 @@ public class ClientCallImplTest {
     final ClientCallImpl<Void, Void> call = new ClientCallImpl<Void, Void>(
         method,
         MoreExecutors.directExecutor(),
-        CallOptions.DEFAULT,
+        baseCallOptions,
         provider,
         deadlineCancellationExecutor);
     final Exception cause = new Exception();
@@ -794,7 +802,7 @@ public class ClientCallImplTest {
   @Test
   public void startAddsMaxSize() {
     CallOptions callOptions =
-        CallOptions.DEFAULT.withMaxInboundMessageSize(1).withMaxOutboundMessageSize(2);
+        baseCallOptions.withMaxInboundMessageSize(1).withMaxOutboundMessageSize(2);
     ClientCallImpl<Void, Void> call = new ClientCallImpl<Void, Void>(
         method,
         new SerializingExecutor(Executors.newSingleThreadExecutor()),
@@ -812,7 +820,7 @@ public class ClientCallImplTest {
   @Test
   public void getAttributes() {
     ClientCallImpl<Void, Void> call = new ClientCallImpl<Void, Void>(
-        method, MoreExecutors.directExecutor(), CallOptions.DEFAULT, provider,
+        method, MoreExecutors.directExecutor(), baseCallOptions, provider,
         deadlineCancellationExecutor);
     Attributes attrs =
         Attributes.newBuilder().set(Key.<String>of("fake key"), "fake value").build();
