@@ -40,7 +40,7 @@ import javax.annotation.concurrent.ThreadSafe;
 @ThreadSafe
 public abstract class StreamTracer {
   /**
-   * Stream is closed.
+   * Stream is closed.  This will be called exactly once.
    */
   public void streamClosed(Status status) {
   }

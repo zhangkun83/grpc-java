@@ -169,31 +169,26 @@ public abstract class AbstractServerImplBuilder<T extends AbstractServerImplBuil
     return thisT();
   }
 
-  /**
-   * Override and return false to skip stream tracers.
-   */
-  protected boolean supportsStreamTracer() {
-    return true;
-  }
-
   @Override
   public ServerImpl build() {
-    io.grpc.internal.InternalServer transportServer = buildTransportServer();
+    ArrayList<ServerStreamTracer.Factory> tracerFactories =
+        new ArrayList<ServerStreamTracer.Factory>();
     StatsContextFactory statsFactory =
         this.statsFactory != null ? this.statsFactory : Stats.getStatsContextFactory();
     if (statsFactory != null) {
       CensusStreamTracerModule census =
           new CensusStreamTracerModule(statsFactory, GrpcUtil.STOPWATCH_SUPPLIER);
-      streamTracerFactories.add(0, census.getServerTracerFactory());
+      tracerFactories.add(census.getServerTracerFactory());
     }
+    tracerFactories.addAll(streamTracerFactories);
+    io.grpc.internal.InternalServer transportServer =
+        buildTransportServer(Collections.unmodifiableList(tracerFactories));
     ServerImpl server = new ServerImpl(getExecutorPool(),
         SharedResourcePool.forResource(GrpcUtil.TIMER_SERVICE), registryBuilder.build(),
         firstNonNull(fallbackRegistry, EMPTY_FALLBACK_REGISTRY), transportServer,
         Context.ROOT, firstNonNull(decompressorRegistry, DecompressorRegistry.getDefaultInstance()),
         firstNonNull(compressorRegistry, CompressorRegistry.getDefaultInstance()),
         transportFilters,
-        supportsStreamTracer() ? streamTracerFactories
-            : Collections.<ServerStreamTracer.Factory>emptyList(),
         GrpcUtil.STOPWATCH_SUPPLIER);
     for (InternalNotifyOnServerBuild notifyTarget : notifyOnBuildList) {
       notifyTarget.notifyOnBuild(server);
@@ -223,9 +218,12 @@ public abstract class AbstractServerImplBuilder<T extends AbstractServerImplBuil
    * Children of AbstractServerBuilder should override this method to provide transport specific
    * information for the server.  This method is mean for Transport implementors and should not be
    * used by normal users.
+   *
+   * @param streamTracerFactories an immutable list of stream tracer factories
    */
   @Internal
-  protected abstract io.grpc.internal.InternalServer buildTransportServer();
+  protected abstract io.grpc.internal.InternalServer buildTransportServer(
+      List<ServerStreamTracer.Factory> streamTracerFactories);
 
   private T thisT() {
     @SuppressWarnings("unchecked")

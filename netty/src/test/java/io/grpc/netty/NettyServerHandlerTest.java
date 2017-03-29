@@ -42,8 +42,10 @@ import static io.netty.handler.codec.http2.Http2CodecUtil.DEFAULT_WINDOW_SIZE;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Matchers.any;
+import static org.mockito.Matchers.anyString;
 import static org.mockito.Matchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doThrow;
@@ -51,12 +53,15 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.when;
 
 import com.google.common.io.ByteStreams;
 import io.grpc.Attributes;
 import io.grpc.Metadata;
+import io.grpc.ServerStreamTracer;
 import io.grpc.Status;
 import io.grpc.Status.Code;
+import io.grpc.StreamTracer;
 import io.grpc.internal.GrpcUtil;
 import io.grpc.internal.ServerStream;
 import io.grpc.internal.ServerStreamListener;
@@ -78,6 +83,8 @@ import io.netty.handler.codec.http2.Http2Settings;
 import io.netty.handler.codec.http2.Http2Stream;
 import io.netty.util.AsciiString;
 import java.io.InputStream;
+import java.util.Arrays;
+import java.util.List;
 import org.junit.Before;
 import org.junit.Ignore;
 import org.junit.Test;
@@ -98,9 +105,11 @@ public class NettyServerHandlerTest extends NettyHandlerTestBase<NettyServerHand
   @Mock
   private ServerStreamListener streamListener;
 
-  private final ServerTransportListener transportListener = spy(new ServerTransportListenerImpl());
+  @Mock
+  private ServerStreamTracer.Factory streamTracerFactory;
 
-  private final StatsTraceContext statsTraceCtx = StatsTraceContext.NOOP;
+  private final ServerTransportListener transportListener = spy(new ServerTransportListenerImpl());
+  private final ServerStreamTracer streamTracer = spy(new ServerStreamTracer() {});
 
   private NettyServerStream stream;
 
@@ -109,11 +118,6 @@ public class NettyServerHandlerTest extends NettyHandlerTestBase<NettyServerHand
   private int maxHeaderListSize = Integer.MAX_VALUE;
 
   private class ServerTransportListenerImpl implements ServerTransportListener {
-
-    @Override
-    public StatsTraceContext methodDetermined(String methodName, Metadata headers) {
-      return statsTraceCtx;
-    }
 
     @Override
     public void streamCreated(ServerStream stream, String method, Metadata headers) {
@@ -133,6 +137,8 @@ public class NettyServerHandlerTest extends NettyHandlerTestBase<NettyServerHand
   @Before
   public void setUp() throws Exception {
     MockitoAnnotations.initMocks(this);
+    when(streamTracerFactory.newServerStreamTracer(anyString(), any(Metadata.class)))
+        .thenReturn(streamTracer);
 
     initChannel(new GrpcHttp2ServerHeadersDecoder(GrpcUtil.DEFAULT_MAX_HEADER_LIST_SIZE));
 
@@ -154,6 +160,17 @@ public class NettyServerHandlerTest extends NettyHandlerTestBase<NettyServerHand
     assertTrue(future.isSuccess());
     verifyWrite().writeData(eq(ctx()), eq(STREAM_ID), eq(content()), eq(0), eq(false),
         any(ChannelPromise.class));
+  }
+
+  @Test
+  public void streamTracerCreated() throws Exception {
+    createStream();
+
+    verify(streamTracerFactory).newServerStreamTracer(eq("foo/bar"), any(Metadata.class));
+    StatsTraceContext statsTraceCtx = stream.statsTraceContext();
+    List<StreamTracer> tracers = statsTraceCtx.getTracersForTest();
+    assertEquals(1, tracers.size());
+    assertSame(streamTracer, tracers.get(0));
   }
 
   @Test
@@ -370,7 +387,8 @@ public class NettyServerHandlerTest extends NettyHandlerTestBase<NettyServerHand
   @Override
   protected NettyServerHandler newHandler() {
     return NettyServerHandler.newHandler(frameReader(), frameWriter(), transportListener,
-        maxConcurrentStreams, flowControlWindow, maxHeaderListSize, DEFAULT_MAX_MESSAGE_SIZE);
+        Arrays.asList(streamTracerFactory), maxConcurrentStreams, flowControlWindow,
+        maxHeaderListSize, DEFAULT_MAX_MESSAGE_SIZE);
   }
 
   @Override

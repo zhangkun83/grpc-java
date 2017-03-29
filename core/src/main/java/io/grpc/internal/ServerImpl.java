@@ -90,7 +90,6 @@ public final class ServerImpl extends io.grpc.Server implements WithLogId {
   private final InternalHandlerRegistry registry;
   private final HandlerRegistry fallbackRegistry;
   private final List<ServerTransportFilter> transportFilters;
-  private final List<ServerStreamTracer.Factory> streamTracerFactories;
   @GuardedBy("lock") private boolean started;
   @GuardedBy("lock") private boolean shutdown;
   /** non-{@code null} if immediate shutdown has been requested. */
@@ -128,7 +127,6 @@ public final class ServerImpl extends io.grpc.Server implements WithLogId {
       InternalServer transportServer, Context rootContext,
       DecompressorRegistry decompressorRegistry, CompressorRegistry compressorRegistry,
       List<ServerTransportFilter> transportFilters,
-      List<ServerStreamTracer.Factory> streamTracerFactories,
       Supplier<Stopwatch> stopwatchSupplier) {
     this.executorPool = Preconditions.checkNotNull(executorPool, "executorPool");
     this.timeoutServicePool = Preconditions.checkNotNull(timeoutServicePool, "timeoutServicePool");
@@ -142,8 +140,6 @@ public final class ServerImpl extends io.grpc.Server implements WithLogId {
     this.compressorRegistry = compressorRegistry;
     this.transportFilters = Collections.unmodifiableList(
         new ArrayList<ServerTransportFilter>(transportFilters));
-    this.streamTracerFactories = Collections.unmodifiableList(
-        new ArrayList<ServerStreamTracer.Factory>(streamTracerFactories));
     this.stopwatchSupplier = Preconditions.checkNotNull(stopwatchSupplier, "stopwatchSupplier");
   }
 
@@ -385,11 +381,6 @@ public final class ServerImpl extends io.grpc.Server implements WithLogId {
     }
 
     @Override
-    public StatsTraceContext methodDetermined(String methodName, Metadata headers) {
-      return StatsTraceContext.newServerContext(streamTracerFactories, methodName, headers);
-    }
-
-    @Override
     public void streamCreated(
         final ServerStream stream, final String methodName, final Metadata headers) {
 
@@ -424,11 +415,12 @@ public final class ServerImpl extends io.grpc.Server implements WithLogId {
               if (method == null) {
                 Status status = Status.UNIMPLEMENTED.withDescription(
                     "Method not found: " + methodName);
-                stream.close(status, new Metadata());
-                // TODO(zhangkun83): this would allow a misbehaving client to blow up the server
-                // in-memory stats storage by sending large number of distinct unimplemented method
+                // TODO(zhangkun83): this error may be recorded by the tracer, and if it's kept in
+                // memory as a map whose key is the method name, this would allow a misbehaving
+                // client to blow up the server in-memory stats storage by sending large number of
+                // distinct unimplemented method
                 // names. (https://github.com/grpc/grpc-java/issues/2285)
-                statsTraceCtx.streamClosed(status);
+                stream.close(status, new Metadata());
                 context.cancel(null);
                 return;
               }
@@ -481,7 +473,7 @@ public final class ServerImpl extends io.grpc.Server implements WithLogId {
         Context.CancellableContext context, StatsTraceContext statsTraceCtx) {
       // TODO(ejona86): should we update fullMethodName to have the canonical path of the method?
       ServerCallImpl<ReqT, RespT> call = new ServerCallImpl<ReqT, RespT>(
-          stream, methodDef.getMethodDescriptor(), headers, context, stream.statsTraceContext(),
+          stream, methodDef.getMethodDescriptor(), headers, context,
           decompressorRegistry, compressorRegistry);
       ServerCall.Listener<ReqT> listener =
           methodDef.getServerCallHandler().startCall(call, headers);

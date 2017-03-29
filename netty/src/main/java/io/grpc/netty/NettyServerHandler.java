@@ -43,6 +43,7 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import io.grpc.Attributes;
 import io.grpc.Metadata;
+import io.grpc.ServerStreamTracer;
 import io.grpc.Status;
 import io.grpc.internal.GrpcUtil;
 import io.grpc.internal.ServerTransportListener;
@@ -78,7 +79,7 @@ import io.netty.handler.codec.http2.Http2StreamVisitor;
 import io.netty.handler.logging.LogLevel;
 import io.netty.util.AsciiString;
 import io.netty.util.ReferenceCountUtil;
-
+import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import javax.annotation.Nullable;
@@ -93,17 +94,20 @@ class NettyServerHandler extends AbstractNettyHandler {
   private final Http2Connection.PropertyKey streamKey;
   private final ServerTransportListener transportListener;
   private final int maxMessageSize;
+  private final List<ServerStreamTracer.Factory> streamTracerFactories;
   private Attributes attributes;
   private Throwable connectionError;
   private boolean teWarningLogged;
   private WriteQueue serverWriteQueue;
   private AsciiString lastKnownAuthority;
 
-  static NettyServerHandler newHandler(ServerTransportListener transportListener,
-                                       int maxStreams,
-                                       int flowControlWindow,
-                                       int maxHeaderListSize,
-                                       int maxMessageSize) {
+  static NettyServerHandler newHandler(
+      ServerTransportListener transportListener,
+      List<ServerStreamTracer.Factory> streamTracerFactories,
+      int maxStreams,
+      int flowControlWindow,
+      int maxHeaderListSize,
+      int maxMessageSize) {
     Preconditions.checkArgument(maxHeaderListSize > 0, "maxHeaderListSize must be positive");
     Http2FrameLogger frameLogger = new Http2FrameLogger(LogLevel.DEBUG, NettyServerHandler.class);
     Http2HeadersDecoder headersDecoder = new GrpcHttp2ServerHeadersDecoder(maxHeaderListSize);
@@ -111,17 +115,19 @@ class NettyServerHandler extends AbstractNettyHandler {
         new DefaultHttp2FrameReader(headersDecoder), frameLogger);
     Http2FrameWriter frameWriter =
         new Http2OutboundFrameLogger(new DefaultHttp2FrameWriter(), frameLogger);
-    return newHandler(frameReader, frameWriter, transportListener, maxStreams, flowControlWindow,
-        maxHeaderListSize, maxMessageSize);
+    return newHandler(frameReader, frameWriter, transportListener, streamTracerFactories,
+        maxStreams, flowControlWindow, maxHeaderListSize, maxMessageSize);
   }
 
   @VisibleForTesting
-  static NettyServerHandler newHandler(Http2FrameReader frameReader, Http2FrameWriter frameWriter,
-                                       ServerTransportListener transportListener,
-                                       int maxStreams,
-                                       int flowControlWindow,
-                                       int maxHeaderListSize,
-                                       int maxMessageSize) {
+  static NettyServerHandler newHandler(
+      Http2FrameReader frameReader, Http2FrameWriter frameWriter,
+      ServerTransportListener transportListener,
+      List<ServerStreamTracer.Factory> streamTracerFactories,
+      int maxStreams,
+      int flowControlWindow,
+      int maxHeaderListSize,
+      int maxMessageSize) {
     Preconditions.checkArgument(maxStreams > 0, "maxStreams must be positive");
     Preconditions.checkArgument(flowControlWindow > 0, "flowControlWindow must be positive");
     Preconditions.checkArgument(maxHeaderListSize > 0, "maxHeaderListSize must be positive");
@@ -144,19 +150,23 @@ class NettyServerHandler extends AbstractNettyHandler {
     settings.maxConcurrentStreams(maxStreams);
     settings.maxHeaderListSize(maxHeaderListSize);
 
-    return new NettyServerHandler(transportListener, decoder, encoder, settings, maxMessageSize);
+    return new NettyServerHandler(
+        transportListener, streamTracerFactories, decoder, encoder, settings, maxMessageSize);
   }
 
-  private NettyServerHandler(ServerTransportListener transportListener,
-                             Http2ConnectionDecoder decoder,
-                             Http2ConnectionEncoder encoder, Http2Settings settings,
-                             int maxMessageSize) {
+  private NettyServerHandler(
+      ServerTransportListener transportListener,
+      List<ServerStreamTracer.Factory> streamTracerFactories,
+      Http2ConnectionDecoder decoder,
+      Http2ConnectionEncoder encoder, Http2Settings settings,
+      int maxMessageSize) {
     super(decoder, encoder, settings);
     checkArgument(maxMessageSize >= 0, "maxMessageSize must be >= 0");
     this.maxMessageSize = maxMessageSize;
 
     streamKey = encoder.connection().newKey();
     this.transportListener = checkNotNull(transportListener, "transportListener");
+    this.streamTracerFactories = checkNotNull(streamTracerFactories, "streamTracerFactories");
 
     // Set the frame listener on the decoder.
     decoder().frameListener(new FrameListener());
@@ -193,7 +203,8 @@ class NettyServerHandler extends AbstractNettyHandler {
 
       Metadata metadata = Utils.convertHeaders(headers);
       StatsTraceContext statsTraceCtx =
-          checkNotNull(transportListener.methodDetermined(method, metadata), "statsTraceCtx");
+          StatsTraceContext.newServerContext(streamTracerFactories, method, metadata);
+
       NettyServerStream.TransportState state = new NettyServerStream.TransportState(
           this, http2Stream, maxMessageSize, statsTraceCtx);
       String authority = getOrUpdateAuthority((AsciiString)headers.authority());

@@ -51,6 +51,7 @@ import io.grpc.Grpc;
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
 import io.grpc.MethodDescriptor.Marshaller;
+import io.grpc.ServerStreamTracer;
 import io.grpc.Status;
 import io.grpc.StatusException;
 import io.grpc.internal.ClientStream;
@@ -411,7 +412,8 @@ public class NettyClientTransportTest {
     ProtocolNegotiator negotiator = ProtocolNegotiators.serverTls(serverContext);
     server = new NettyServer(TestUtils.testServerAddress(0),
         NioServerSocketChannel.class, group, group, negotiator,
-        maxStreamsPerConnection, DEFAULT_WINDOW_SIZE, DEFAULT_MAX_MESSAGE_SIZE, maxHeaderListSize);
+        Collections.<ServerStreamTracer.Factory>emptyList(), maxStreamsPerConnection,
+        DEFAULT_WINDOW_SIZE, DEFAULT_MAX_MESSAGE_SIZE, maxHeaderListSize);
     server.start(serverListener);
     address = TestUtils.testServerAddress(server.getPort());
     authority = GrpcUtil.authorityFromHostAndPort(address.getHostString(), address.getPort());
@@ -535,11 +537,6 @@ public class NettyClientTransportTest {
     public ServerTransportListener transportCreated(final ServerTransport transport) {
       transports.add((NettyServerTransport) transport);
       return new ServerTransportListener() {
-        @Override
-        public StatsTraceContext methodDetermined(String method, Metadata headers) {
-          return StatsTraceContext.NOOP;
-        }
-
         @Override
         public void streamCreated(ServerStream stream, String method, Metadata headers) {
           EchoServerStreamListener listener = new EchoServerStreamListener(stream, method, headers);

@@ -70,10 +70,11 @@ import javax.annotation.concurrent.ThreadSafe;
  * The stats and tracing information for a stream.
  */
 @ThreadSafe
-public final class StatsTraceContext extends StreamTracer {
+public final class StatsTraceContext {
   public static final StatsTraceContext NOOP = new StatsTraceContext(new StreamTracer[0]);
 
-  final StreamTracer[] tracers;
+  private final StreamTracer[] tracers;
+  private final AtomicBoolean closed = new AtomicBoolean(false);
 
   public static StatsTraceContext newClientContext(CallOptions callOptions, Metadata headers) {
     List<ClientStreamTracer.Factory> factories = callOptions.getStreamTracerFactories();
@@ -104,7 +105,7 @@ public final class StatsTraceContext extends StreamTracer {
    * Returns a copy of the tracer list.
    */
   @VisibleForTesting
-  List<StreamTracer> getTracersForTest() {
+  public List<StreamTracer> getTracersForTest() {
     return new ArrayList<StreamTracer>(Arrays.asList(tracers));
   }
 
@@ -129,49 +130,47 @@ public final class StatsTraceContext extends StreamTracer {
     return ctx;
   }
 
-  @Override
+  /**
+   * This may be called multiple times, and only the first value will be taken.
+   */
   public void streamClosed(Status status) {
-    for (StreamTracer tracer : tracers) {
-      tracer.streamClosed(status);
+    if (closed.compareAndSet(false, true)) {
+      for (StreamTracer tracer : tracers) {
+        tracer.streamClosed(status);
+      }
     }
   }
 
-  @Override
   public void outboundMessage() {
     for (StreamTracer tracer : tracers) {
       tracer.outboundMessage();
     }
   }
 
-  @Override
   public void inboundMessage() {
     for (StreamTracer tracer : tracers) {
       tracer.inboundMessage();
     }
   }
 
-  @Override
   public void outboundUncompressedSize(long bytes) {
     for (StreamTracer tracer : tracers) {
       tracer.outboundUncompressedSize(bytes);
     }
   }
 
-  @Override
   public void outboundWireSize(long bytes) {
     for (StreamTracer tracer : tracers) {
       tracer.outboundWireSize(bytes);
     }
   }
 
-  @Override
   public void inboundUncompressedSize(long bytes) {
     for (StreamTracer tracer : tracers) {
       tracer.inboundUncompressedSize(bytes);
     }
   }
 
-  @Override
   public void inboundWireSize(long bytes) {
     for (StreamTracer tracer : tracers) {
       tracer.inboundWireSize(bytes);
