@@ -226,15 +226,7 @@ public abstract class AbstractInteropTest {
           return tracer;
         }
       };
-
-  /**
-   * Must be called by the subclass setup method if overridden.
-   */
-  @Before
-  public void setUp() {
-    channel = createChannel();
-
-    ClientInterceptor tracerSetupInterceptor = new ClientInterceptor() {
+  private final ClientInterceptor tracerSetupInterceptor = new ClientInterceptor() {
         @Override
         public <ReqT, RespT> ClientCall<ReqT, RespT> interceptCall(
             MethodDescriptor<ReqT, RespT> method, CallOptions callOptions, Channel next) {
@@ -242,6 +234,13 @@ public abstract class AbstractInteropTest {
               method, callOptions.withStreamTracerFactory(clientStreamTracerFactory));
         }
       };
+
+  /**
+   * Must be called by the subclass setup method if overridden.
+   */
+  @Before
+  public void setUp() {
+    channel = createChannel();
 
     blockingStub =
         TestServiceGrpc.newBlockingStub(channel).withInterceptors(tracerSetupInterceptor);
@@ -476,7 +475,13 @@ public abstract class AbstractInteropTest {
         Status.fromThrowable(responseObserver.getError()).getCode());
 
     if (metricsExpected()) {
-      assertClientMetrics("grpc.testing.TestService/StreamingInputCall", Status.Code.CANCELLED);
+      // CensusStreamTracerModule record final status in the interceptor, thus is guaranteed to be
+      // recorded.  The tracer stats rely on the stream being created, which is not always the case
+      // in this test.  Therefore we don't check the tracer stats.
+      MetricsRecord clientRecord = clientStatsCtxFactory.pollRecord();
+      checkTags(
+          clientRecord, false, "grpc.testing.TestService/StreamingInputCall",
+          Status.CANCELLED.getCode());
       // Do not check server-side metrics, because the status on the server side is undetermined.
     }
   }
@@ -796,7 +801,11 @@ public abstract class AbstractInteropTest {
     }
     if (metricsExpected()) {
       assertMetrics("grpc.testing.TestService/EmptyCall", Status.Code.OK);
-      assertClientMetrics("grpc.testing.TestService/StreamingOutputCall",
+      // Stream may not have been created before deadline is exceeded, thus we don't test the tracer
+      // stats.
+      MetricsRecord clientRecord = clientStatsCtxFactory.pollRecord();
+      checkTags(
+          clientRecord, false, "grpc.testing.TestService/StreamingOutputCall",
           Status.Code.DEADLINE_EXCEEDED);
       // Do not check server-side metrics, because the status on the server side is undetermined.
     }
@@ -825,7 +834,11 @@ public abstract class AbstractInteropTest {
         Status.fromThrowable(recorder.getError()).getCode());
     if (metricsExpected()) {
       assertMetrics("grpc.testing.TestService/EmptyCall", Status.Code.OK);
-      assertClientMetrics("grpc.testing.TestService/StreamingOutputCall",
+      // Stream may not have been created when deadline is exceeded, thus we don't check tracer
+      // stats.
+      MetricsRecord clientRecord = clientStatsCtxFactory.pollRecord();
+      checkTags(
+          clientRecord, false, "grpc.testing.TestService/StreamingOutputCall",
           Status.Code.DEADLINE_EXCEEDED);
       // Do not check server-side metrics, because the status on the server side is undetermined.
     }
@@ -842,8 +855,15 @@ public abstract class AbstractInteropTest {
     } catch (StatusRuntimeException ex) {
       assertEquals(Status.Code.DEADLINE_EXCEEDED, ex.getStatus().getCode());
     }
+
+    // CensusStreamTracerModule record final status in the interceptor, thus is guaranteed to be
+    // recorded.  The tracer stats rely on the stream being created, which is not the case if
+    // deadline is exceeded before the call is created. Therefore we don't check the tracer stats.
     if (metricsExpected()) {
-      assertClientMetrics("grpc.testing.TestService/EmptyCall", Status.Code.DEADLINE_EXCEEDED);
+      MetricsRecord clientRecord = clientStatsCtxFactory.pollRecord();
+      checkTags(
+          clientRecord, false, "grpc.testing.TestService/EmptyCall",
+          Status.DEADLINE_EXCEEDED.getCode());
     }
 
     // warm up the channel
@@ -858,7 +878,11 @@ public abstract class AbstractInteropTest {
     }
     if (metricsExpected()) {
       assertMetrics("grpc.testing.TestService/EmptyCall", Status.Code.OK);
-      assertClientMetrics("grpc.testing.TestService/EmptyCall", Status.Code.DEADLINE_EXCEEDED);
+
+      MetricsRecord clientRecord = clientStatsCtxFactory.pollRecord();
+      checkTags(
+          clientRecord, false, "grpc.testing.TestService/EmptyCall",
+          Status.DEADLINE_EXCEEDED.getCode());
     }
   }
 
@@ -1094,7 +1118,7 @@ public abstract class AbstractInteropTest {
       assertEquals(errorMessage, e.getStatus().getDescription());
     }
     if (metricsExpected()) {
-      assertClientMetrics("grpc.testing.TestService/UnaryCall", Status.Code.UNKNOWN);
+      assertMetrics("grpc.testing.TestService/UnaryCall", Status.Code.UNKNOWN);
     }
 
     // Test FullDuplexCall
@@ -1112,7 +1136,7 @@ public abstract class AbstractInteropTest {
     assertEquals(errorMessage, Status.fromThrowable(captor.getValue()).getDescription());
     verifyNoMoreInteractions(responseObserver);
     if (metricsExpected()) {
-      assertClientMetrics("grpc.testing.TestService/FullDuplexCall", Status.Code.UNKNOWN);
+      assertMetrics("grpc.testing.TestService/FullDuplexCall", Status.Code.UNKNOWN);
     }
   }
 
@@ -1136,7 +1160,7 @@ public abstract class AbstractInteropTest {
   @Test(timeout = 10000)
   public void unimplementedService() {
     UnimplementedServiceGrpc.UnimplementedServiceBlockingStub stub =
-        UnimplementedServiceGrpc.newBlockingStub(channel);
+        UnimplementedServiceGrpc.newBlockingStub(channel).withInterceptors(tracerSetupInterceptor);
     try {
       stub.unimplementedCall(Empty.getDefaultInstance());
       fail();
@@ -1176,8 +1200,13 @@ public abstract class AbstractInteropTest {
                  Status.fromThrowable(responseObserver.getError()).getCode());
 
     if (metricsExpected()) {
-      assertClientMetrics("grpc.testing.TestService/FullDuplexCall", Status.Code.DEADLINE_EXCEEDED);
-      // Do not check server-side metrics, because the status on the server side is undetermined.
+      // CensusStreamTracerModule record final status in the interceptor, thus is guaranteed to be
+      // recorded.  The tracer stats rely on the stream being created, which is not always the case
+      // in this test, thus we will not check that.
+      MetricsRecord clientRecord = clientStatsCtxFactory.pollRecord();
+      checkTags(
+          clientRecord, false, "grpc.testing.TestService/FullDuplexCall",
+          Status.DEADLINE_EXCEEDED.getCode());
     }
   }
 
@@ -1424,27 +1453,22 @@ public abstract class AbstractInteropTest {
 
   private void assertClientMetrics(String method, Status.Code status,
       Collection<? extends MessageLite> requests, Collection<? extends MessageLite> responses) {
+    // Tracer-based stats
     ClientStreamTracer tracer = clientStreamTracers.poll();
     assertNotNull(tracer);
     verify(tracer).headersSent();
     ArgumentCaptor<Status> statusCaptor = ArgumentCaptor.forClass(Status.class);
     // assertClientMetrics() is called right after application receives status,
-    // but streamClosed() may be called slightly later than that.
+    // but streamClosed() may be called slightly later than that.  So we need a timeout.
     verify(tracer, timeout(5000)).streamClosed(statusCaptor.capture());
     assertEquals(status, statusCaptor.getValue().getCode());
 
-    try {
-      // assertClientMetrics() is called right after application receives status, but
-      // streamClosed(), which records the result to StatsContext, may be called slightly later than
-      // that.
-      MetricsRecord clientRecord = clientStatsCtxFactory.pollRecord(5, TimeUnit.SECONDS);
-      assertNotNull("clientRecord is not null", clientRecord);
-      checkTags(clientRecord, false, method, status);
-      if (requests != null && responses != null) {
-        checkMetrics(clientRecord, false, requests, responses);
-      }
-    } catch (InterruptedException e) {
-      throw new RuntimeException(e);
+    // CensusStreamTracerModule records final status in interceptor, which is guaranteed to be done
+    // before application receives status.
+    MetricsRecord clientRecord = clientStatsCtxFactory.pollRecord();
+    checkTags(clientRecord, false, method, status);
+    if (requests != null && responses != null) {
+      checkMetrics(clientRecord, false, requests, responses);
     }
   }
 
@@ -1527,6 +1551,7 @@ public abstract class AbstractInteropTest {
 
   private static void checkTags(
       MetricsRecord record, boolean server, String methodName, Status.Code status) {
+    assertNotNull("record is not null", record);
     TagValue methodNameTag = record.tags.get(
         server ? RpcConstants.RPC_SERVER_METHOD : RpcConstants.RPC_CLIENT_METHOD);
     assertNotNull("method name tagged", methodNameTag);
