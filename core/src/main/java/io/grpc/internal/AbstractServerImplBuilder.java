@@ -169,6 +169,13 @@ public abstract class AbstractServerImplBuilder<T extends AbstractServerImplBuil
     return thisT();
   }
 
+  /**
+   * Override and return false to skip stream tracers.
+   */
+  protected boolean supportsStreamTracer() {
+    return true;
+  }
+
   @Override
   public ServerImpl build() {
     io.grpc.internal.InternalServer transportServer = buildTransportServer();
@@ -185,7 +192,8 @@ public abstract class AbstractServerImplBuilder<T extends AbstractServerImplBuil
         Context.ROOT, firstNonNull(decompressorRegistry, DecompressorRegistry.getDefaultInstance()),
         firstNonNull(compressorRegistry, CompressorRegistry.getDefaultInstance()),
         transportFilters,
-        streamTracerFactories,
+        supportsStreamTracer() ? streamTracerFactories
+            : Collections.<ServerStreamTracer.Factory>emptyList(),
         GrpcUtil.STOPWATCH_SUPPLIER);
     for (InternalNotifyOnServerBuild notifyTarget : notifyOnBuildList) {
       notifyTarget.notifyOnBuild(server);

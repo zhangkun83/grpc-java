@@ -78,13 +78,12 @@ public final class InProcessServerBuilder
     throw new UnsupportedOperationException("TLS not supported in InProcessServer");
   }
 
-  @Internal
   @Override
-  public InProcessServerBuilder statsContextFactory(StatsContextFactory statsFactory) {
+  protected boolean supportsStreamTracer() {
     // TODO(zhangkun83): InProcessTransport by-passes framer and deframer, thus message sizses are
     // not counted.  Stats is disabled by using a NOOP stats factory in the constructor, and here
     // we prevent the user from overriding it.
     // (https://github.com/grpc/grpc-java/issues/2284)
-    return this;
+    return false;
   }
 }

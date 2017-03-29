@@ -249,6 +249,7 @@ public abstract class AbstractInteropTest {
     requestHeadersCapture.set(null);
     clientStatsCtxFactory.rolloverRecords();
     serverStatsCtxFactory.rolloverRecords();
+    serverStreamTracers.clear();
   }
 
   /** Clean up. */
@@ -258,7 +259,7 @@ public abstract class AbstractInteropTest {
       channel.shutdown();
     }
     if (!metricsExpected()) {
-      verifyZeroInteractions(clientStreamTracerFactory);
+      assertEquals(0, clientStreamTracers.size());
       assertEquals(0, serverStreamTracers.size());
     }
   }
