@@ -40,6 +40,7 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.Matchers.any;
+import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.timeout;
@@ -77,6 +78,7 @@ import io.grpc.ServerInterceptors;
 import io.grpc.ServerStreamTracer;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import io.grpc.StreamTracer;
 import io.grpc.auth.MoreCallCredentials;
 import io.grpc.internal.AbstractServerImplBuilder;
 import io.grpc.internal.GrpcUtil;
@@ -1461,8 +1463,10 @@ public abstract class AbstractInteropTest {
     // before application receives status.
     MetricsRecord clientRecord = clientStatsCtxFactory.pollRecord();
     checkTags(clientRecord, false, method, status);
+
     if (requests != null && responses != null) {
-      checkMetrics(clientRecord, false, requests, responses);
+      checkTracerMetrics(tracer, requests, responses);
+      checkCensusMetrics(clientRecord, false, requests, responses);
     }
   }
 
@@ -1493,7 +1497,7 @@ public abstract class AbstractInteropTest {
       try {
         checkTags(serverRecord, true, method, status);
         if (requests != null && responses != null) {
-          checkMetrics(serverRecord, true, requests, responses);
+          checkCensusMetrics(serverRecord, true, requests, responses);
         }
         passed = true;
         break;
@@ -1527,7 +1531,9 @@ public abstract class AbstractInteropTest {
         ArgumentCaptor<Status> statusCaptor = ArgumentCaptor.forClass(Status.class);
         verify(tracerInfo.tracer).streamClosed(statusCaptor.capture());
         assertEquals(status, statusCaptor.getValue().getCode());
-        // checkTracerMetrics(tracer)
+        if (requests != null && responses != null) {
+          checkTracerMetrics(tracerInfo.tracer, responses, requests);
+        }
         passed = true;
         break;
       } catch (AssertionError e) {
@@ -1555,9 +1561,38 @@ public abstract class AbstractInteropTest {
     assertEquals(status.toString(), statusTag.toString());
   }
 
-  // TODO(zhangkun83): check sizes from tracer in checkTracerMetrics(StreamTracer, inbound,
-  // outbound);
-  private static void checkMetrics(MetricsRecord record, boolean server,
+  private static void checkTracerMetrics(
+      StreamTracer tracer,
+      Collection<? extends MessageLite> sentMessages,
+      Collection<? extends MessageLite> receivedMessages) {
+    verify(tracer, times(sentMessages.size())).outboundMessage();
+    verify(tracer, times(receivedMessages.size())).inboundMessage();
+
+    long uncompressedSentSize = 0;
+    for (MessageLite msg : sentMessages) {
+      uncompressedSentSize += msg.getSerializedSize();
+    }
+    long uncompressedReceivedSize = 0;
+    for (MessageLite msg : receivedMessages) {
+      uncompressedReceivedSize += msg.getSerializedSize();
+    }
+    ArgumentCaptor<Long> outboundSizeCaptor = ArgumentCaptor.forClass(Long.class);
+    ArgumentCaptor<Long> inboundSizeCaptor = ArgumentCaptor.forClass(Long.class);
+    verify(tracer, atLeast(0)).outboundUncompressedSize(outboundSizeCaptor.capture());
+    verify(tracer, atLeast(0)).inboundUncompressedSize(inboundSizeCaptor.capture());
+    long recordedUncompressedOutboundSize = 0;
+    for (Long size : outboundSizeCaptor.getAllValues()) {
+      recordedUncompressedOutboundSize += size;
+    }
+    long recordedUncompressedInboundSize = 0;
+    for (Long size : inboundSizeCaptor.getAllValues()) {
+      recordedUncompressedInboundSize += size;
+    }
+    assertEquals(uncompressedSentSize, recordedUncompressedOutboundSize);
+    assertEquals(uncompressedReceivedSize, recordedUncompressedInboundSize);
+  }
+
+  private static void checkCensusMetrics(MetricsRecord record, boolean server,
       Collection<? extends MessageLite> requests, Collection<? extends MessageLite> responses) {
     int uncompressedRequestsSize = 0;
     for (MessageLite request : requests) {
