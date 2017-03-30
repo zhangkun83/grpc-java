@@ -36,7 +36,7 @@ import javax.annotation.concurrent.ThreadSafe;
 /**
  * Listens to events on a stream to collect metrics.
  */
-@ExperimentalApi
+@ExperimentalApi("https://github.com/grpc/grpc-java/issues/2861")
 @ThreadSafe
 public abstract class ServerStreamTracer extends StreamTracer {
   /**

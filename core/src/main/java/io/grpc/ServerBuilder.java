@@ -100,8 +100,7 @@ public abstract class ServerBuilder<T extends ServerBuilder<T>> {
    * Adds a {@link ServerStreamTracer.Factory} to measure server-side traffic.  The order of
    * factories being added is the order they will be executed.
    */
-  // TODO(zhangkun83): assign an issue to new experimental APIs
-  @ExperimentalApi
+  @ExperimentalApi("https://github.com/grpc/grpc-java/issues/2861")
   public T addStreamTracerFactory(ServerStreamTracer.Factory factory) {
     throw new UnsupportedOperationException();
   }

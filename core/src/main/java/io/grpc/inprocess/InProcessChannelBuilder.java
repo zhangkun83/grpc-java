@@ -32,7 +32,6 @@
 package io.grpc.inprocess;
 
 import com.google.common.base.Preconditions;
-import com.google.instrumentation.stats.StatsContextFactory;
 import io.grpc.ExperimentalApi;
 import io.grpc.Internal;
 import io.grpc.internal.AbstractManagedChannelImplBuilder;
@@ -85,14 +84,12 @@ public class InProcessChannelBuilder extends
     return new InProcessClientTransportFactory(name);
   }
 
-  @Internal
   @Override
-  public InProcessChannelBuilder statsContextFactory(StatsContextFactory statsFactory) {
+  protected boolean recordsStats() {
     // TODO(zhangkun83): InProcessTransport by-passes framer and deframer, thus message sizses are
-    // not counted.  Stats is disabled by using a NOOP stats factory in the constructor, and here
-    // we prevent the user from overriding it.
+    // not counted.  Therefore, we disable stats for now.
     // (https://github.com/grpc/grpc-java/issues/2284)
-    return this;
+    return false;
   }
 
   /**

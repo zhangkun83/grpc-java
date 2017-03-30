@@ -36,7 +36,7 @@ import javax.annotation.concurrent.ThreadSafe;
 /**
  * {@link StreamTracer} for the client-side.
  */
-@ExperimentalApi
+@ExperimentalApi("https://github.com/grpc/grpc-java/issues/2861")
 @ThreadSafe
 public abstract class ClientStreamTracer extends StreamTracer {
   /**

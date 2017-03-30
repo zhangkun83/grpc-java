@@ -250,6 +250,7 @@ public final class CallOptions {
    *
    * <p>This method doesn't replace existing factories, or try to de-duplicate factories.
    */
+  @ExperimentalApi("https://github.com/grpc/grpc-java/issues/2861")
   public CallOptions withStreamTracerFactory(ClientStreamTracer.Factory factory) {
     CallOptions newOptions = new CallOptions(this);
     ArrayList<ClientStreamTracer.Factory> newList =
@@ -263,6 +264,7 @@ public final class CallOptions {
   /**
    * Returns an immutable list of {@code ClientStreamTracerFactory}s.
    */
+  @ExperimentalApi("https://github.com/grpc/grpc-java/issues/2861")
   public List<ClientStreamTracer.Factory> getStreamTracerFactories() {
     return streamTracerFactories;
   }

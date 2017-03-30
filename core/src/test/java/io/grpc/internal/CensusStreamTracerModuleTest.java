@@ -216,7 +216,6 @@ public class CensusStreamTracerModuleTest {
     fakeClock.forwardTime(24, MILLISECONDS);
     tracer.inboundWireSize(154);
     tracer.inboundUncompressedSize(552);
-    // TODO(zhangkun83): add test to make sure streamClosed is called by the core for client
     tracer.streamClosed(Status.OK);
     tracerFactory.callEnded(Status.OK);
 
