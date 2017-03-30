@@ -36,31 +36,25 @@ import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
 import com.google.common.base.Stopwatch;
 import com.google.common.base.Supplier;
-import com.google.instrumentation.stats.MeasurementDescriptor;
 import com.google.instrumentation.stats.MeasurementMap;
 import com.google.instrumentation.stats.RpcConstants;
 import com.google.instrumentation.stats.StatsContext;
 import com.google.instrumentation.stats.StatsContextFactory;
-import com.google.instrumentation.stats.TagKey;
 import com.google.instrumentation.stats.TagValue;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
 import io.grpc.ClientInterceptor;
+import io.grpc.ClientStreamTracer;
 import io.grpc.Context;
 import io.grpc.ForwardingClientCall;
 import io.grpc.ForwardingClientCallListener;
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
-import io.grpc.ServerCall;
-import io.grpc.ServerCallHandler;
-import io.grpc.ServerInterceptor;
-import io.grpc.Status;
-import io.grpc.ClientStreamTracer;
 import io.grpc.ServerStreamTracer;
+import io.grpc.Status;
 import io.grpc.StreamTracer;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -83,6 +77,8 @@ import javax.annotation.Nullable;
  */
 final class CensusStreamTracerModule {
   private static final double NANOS_PER_MILLI = TimeUnit.MILLISECONDS.toNanos(1);
+  private static final long UNSET_CLIENT_PENDING_NANOS = -1;
+  private static final ClientTracer BLANK_CLIENT_TRACER = new ClientTracer();
 
   // TODO(zhangkun): point to Census's StatsContext key once they've made it public
   @VisibleForTesting
@@ -125,7 +121,28 @@ final class CensusStreamTracerModule {
           });
   }
 
-  private static final long UNSET_CLIENT_PENDING_NANOS = -1;
+  /**
+   * Creates a client tracer factory for a new call.
+   */
+  @VisibleForTesting
+  ClientTracerFactory newClientTracerFactory(StatsContext parentCtx, String fullMethodName) {
+    return new ClientTracerFactory(parentCtx, fullMethodName);
+  }
+
+  /**
+   * Returns the server tracer factory.
+   */
+  ServerStreamTracer.Factory getServerTracerFactory() {
+    return new ServerTracerFactory();
+  }
+
+  /**
+   * Returns the client interceptor that facilitates Census-based stats reporting.
+   */
+  ClientInterceptor getClientInterceptor() {
+    return clientInterceptor;
+  }
+
   private static final class ClientTracer extends ClientStreamTracer {
     final AtomicLong outboundWireSize = new AtomicLong();
     final AtomicLong inboundWireSize = new AtomicLong();
@@ -172,30 +189,6 @@ final class CensusStreamTracerModule {
       inboundUncompressedSize.addAndGet(bytes);
     }
   }
-
-  /**
-   * Creates a client tracer factory for a new call.
-   */
-  @VisibleForTesting
-  ClientTracerFactory newClientTracerFactory(StatsContext parentCtx, String fullMethodName) {
-    return new ClientTracerFactory(parentCtx, fullMethodName);
-  }
-
-  /**
-   * Returns the server tracer factory.
-   */
-  ServerStreamTracer.Factory getServerTracerFactory() {
-    return new ServerTracerFactory();
-  }
-
-  /**
-   * Returns the client interceptor that facilitates Census-based stats reporting.
-   */
-  ClientInterceptor getClientInterceptor() {
-    return clientInterceptor;
-  }
-
-  private static final ClientTracer BLANK_CLIENT_TRACER = new ClientTracer();
 
   @VisibleForTesting
   final class ClientTracerFactory extends ClientStreamTracer.Factory {

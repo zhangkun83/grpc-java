@@ -47,7 +47,7 @@ public abstract class ServerStreamTracer extends StreamTracer {
     return context;
   }
 
-  public static abstract class Factory {
+  public abstract static class Factory {
     /**
      * Creates a {@link ServerStreamTracer} for a new server stream.
      *

@@ -31,39 +31,20 @@
 
 package io.grpc.internal;
 
-import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
-import static com.google.common.base.Preconditions.checkState;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
-import com.google.common.base.Stopwatch;
-import com.google.common.base.Supplier;
-import com.google.instrumentation.stats.MeasurementDescriptor;
-import com.google.instrumentation.stats.MeasurementMap;
-import com.google.instrumentation.stats.RpcConstants;
-import com.google.instrumentation.stats.StatsContext;
-import com.google.instrumentation.stats.StatsContextFactory;
-import com.google.instrumentation.stats.TagKey;
-import com.google.instrumentation.stats.TagValue;
 import io.grpc.CallOptions;
+import io.grpc.ClientStreamTracer;
 import io.grpc.Context;
 import io.grpc.Metadata;
-import io.grpc.ServerCall;
-import io.grpc.Status;
-import io.grpc.ClientStreamTracer;
 import io.grpc.ServerStreamTracer;
+import io.grpc.Status;
 import io.grpc.StreamTracer;
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
-import javax.annotation.Nullable;
 import javax.annotation.concurrent.ThreadSafe;
 
 /**
@@ -76,8 +57,14 @@ public final class StatsTraceContext {
   private final StreamTracer[] tracers;
   private final AtomicBoolean closed = new AtomicBoolean(false);
 
+  /**
+   * Factory method for the client-side.
+   */
   public static StatsTraceContext newClientContext(CallOptions callOptions, Metadata headers) {
     List<ClientStreamTracer.Factory> factories = callOptions.getStreamTracerFactories();
+    if (factories.isEmpty()) {
+      return NOOP;
+    }
     // This array will be iterated multiple times per RPC. Use primitive array instead of Collection
     // so that for-each doesn't create an Iterator every time.
     StreamTracer[] tracers = new StreamTracer[factories.size()];
@@ -87,8 +74,14 @@ public final class StatsTraceContext {
     return new StatsTraceContext(tracers);
   }
 
+  /**
+   * Factory method for the server-side.
+   */
   public static StatsTraceContext newServerContext(
       List<ServerStreamTracer.Factory> factories, String fullMethodName, Metadata headers) {
+    if (factories.isEmpty()) {
+      return NOOP;
+    }
     StreamTracer[] tracers = new StreamTracer[factories.size()];
     for (int i = 0; i < tracers.length; i++) {
       tracers[i] = factories.get(i).newServerStreamTracer(fullMethodName, headers);
@@ -110,7 +103,7 @@ public final class StatsTraceContext {
   }
 
   /**
-   * Client-only.
+   * See {@link ClientStreamTracer#headersSent}.  For client-side only.
    */
   public void clientHeadersSent() {
     for (StreamTracer tracer : tracers) {
@@ -119,7 +112,7 @@ public final class StatsTraceContext {
   }
 
   /**
-   * Server-only.
+   * See {@link ServerStreamTracer#filterContext}.  For server-side only.
    */
   public <ReqT, RespT> Context serverFilterContext(Context context) {
     Context ctx = checkNotNull(context, "context");
@@ -131,7 +124,8 @@ public final class StatsTraceContext {
   }
 
   /**
-   * This may be called multiple times, and only the first value will be taken.
+   * See {@link StreamTracer#streamClosed}. This may be called multiple times, and only the first
+   * value will be taken.
    */
   public void streamClosed(Status status) {
     if (closed.compareAndSet(false, true)) {
@@ -141,36 +135,54 @@ public final class StatsTraceContext {
     }
   }
 
+  /**
+   * See {@link StreamTracer#outboundMessage}.
+   */
   public void outboundMessage() {
     for (StreamTracer tracer : tracers) {
       tracer.outboundMessage();
     }
   }
 
+  /**
+   * See {@link StreamTracer#inboundMessage}.
+   */
   public void inboundMessage() {
     for (StreamTracer tracer : tracers) {
       tracer.inboundMessage();
     }
   }
 
+  /**
+   * See {@link StreamTracer#outboundUncompressedSize}.
+   */
   public void outboundUncompressedSize(long bytes) {
     for (StreamTracer tracer : tracers) {
       tracer.outboundUncompressedSize(bytes);
     }
   }
 
+  /**
+   * See {@link StreamTracer#outboundWireSize}.
+   */
   public void outboundWireSize(long bytes) {
     for (StreamTracer tracer : tracers) {
       tracer.outboundWireSize(bytes);
     }
   }
 
+  /**
+   * See {@link StreamTracer#inboundUncompressedSize}.
+   */
   public void inboundUncompressedSize(long bytes) {
     for (StreamTracer tracer : tracers) {
       tracer.inboundUncompressedSize(bytes);
     }
   }
 
+  /**
+   * See {@link StreamTracer#inboundWireSize}.
+   */
   public void inboundWireSize(long bytes) {
     for (StreamTracer tracer : tracers) {
       tracer.inboundWireSize(bytes);

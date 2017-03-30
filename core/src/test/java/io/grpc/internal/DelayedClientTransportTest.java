@@ -57,7 +57,6 @@ import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
 import io.grpc.MethodDescriptor.MethodType;
 import io.grpc.Status;
-import io.grpc.StreamTracer;
 import io.grpc.StringMarshaller;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.Executor;

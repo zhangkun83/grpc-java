@@ -38,7 +38,6 @@ import io.grpc.Internal;
 import io.grpc.internal.AbstractManagedChannelImplBuilder;
 import io.grpc.internal.ClientTransportFactory;
 import io.grpc.internal.ConnectionClientTransport;
-import io.grpc.internal.NoopStatsContextFactory;
 import java.net.SocketAddress;
 
 /**

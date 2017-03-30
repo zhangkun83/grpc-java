@@ -44,7 +44,6 @@ import static org.mockito.Mockito.when;
 
 import com.google.instrumentation.stats.RpcConstants;
 import com.google.instrumentation.stats.StatsContext;
-import com.google.instrumentation.stats.StatsContextFactory;
 import com.google.instrumentation.stats.TagValue;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
@@ -56,13 +55,11 @@ import io.grpc.Metadata;
 import io.grpc.MethodDescriptor.MethodType;
 import io.grpc.MethodDescriptor;
 import io.grpc.ServerCall;
-import io.grpc.ServerCallHandler;
 import io.grpc.ServerStreamTracer;
 import io.grpc.Status;
 import io.grpc.internal.testing.StatsTestUtils;
 import io.grpc.internal.testing.StatsTestUtils.FakeStatsContextFactory;
 import io.grpc.testing.TestMethodDescriptors;
-import java.util.concurrent.atomic.AtomicReference;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -148,7 +145,7 @@ public class CensusStreamTracerModuleTest {
                   StatsTestUtils.EXTRA_TAG, TagValue.create("extra value")));
       Context origCtx = ctx.attach();
       try {
-         call = interceptor.interceptCall(method, CALL_OPTIONS, mockChannel);
+        call = interceptor.interceptCall(method, CALL_OPTIONS, mockChannel);
       } finally {
         ctx.detach(origCtx);
       }

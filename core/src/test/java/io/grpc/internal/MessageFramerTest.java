@@ -32,7 +32,6 @@
 package io.grpc.internal;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.Matchers.eq;
@@ -42,13 +41,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.verifyZeroInteractions;
 
-import com.google.instrumentation.stats.RpcConstants;
 import io.grpc.Codec;
-import io.grpc.Metadata;
-import io.grpc.Status;
 import io.grpc.StreamTracer;
 import io.grpc.internal.testing.StatsTestUtils.FakeStatsContextFactory;
-import io.grpc.internal.testing.StatsTestUtils.MetricsRecord;
 import java.io.BufferedInputStream;
 import java.io.ByteArrayInputStream;
 import java.nio.ByteBuffer;

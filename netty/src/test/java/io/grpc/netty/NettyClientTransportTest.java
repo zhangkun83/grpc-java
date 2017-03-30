@@ -63,7 +63,6 @@ import io.grpc.internal.ServerStream;
 import io.grpc.internal.ServerStreamListener;
 import io.grpc.internal.ServerTransport;
 import io.grpc.internal.ServerTransportListener;
-import io.grpc.internal.StatsTraceContext;
 import io.grpc.testing.TestUtils;
 import io.netty.channel.ChannelConfig;
 import io.netty.channel.ChannelOption;

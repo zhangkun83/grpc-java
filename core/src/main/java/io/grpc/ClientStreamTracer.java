@@ -48,7 +48,7 @@ public abstract class ClientStreamTracer extends StreamTracer {
   /**
    * Factory class for {@link ClientStreamTracer}.
    */
-  public static abstract class Factory {
+  public abstract static class Factory {
     /**
      * Creates a {@link ClientStreamTracer} for a new client stream.
      *

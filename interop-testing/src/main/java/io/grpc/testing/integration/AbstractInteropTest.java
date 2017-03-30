@@ -40,14 +40,10 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyString;
-import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verifyZeroInteractions;
-import static org.mockito.Mockito.when;
 
 import com.google.auth.oauth2.AccessToken;
 import com.google.auth.oauth2.ComputeEngineCredentials;
@@ -82,7 +78,6 @@ import io.grpc.ServerStreamTracer;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.auth.MoreCallCredentials;
-import io.grpc.internal.AbstractManagedChannelImplBuilder;
 import io.grpc.internal.AbstractServerImplBuilder;
 import io.grpc.internal.GrpcUtil;
 import io.grpc.internal.testing.StatsTestUtils.FakeStatsContextFactory;
@@ -125,7 +120,6 @@ import org.junit.Assume;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
-import org.mockito.InOrder;
 import org.mockito.Mockito;
 import org.mockito.verification.VerificationMode;
 
@@ -1561,7 +1555,8 @@ public abstract class AbstractInteropTest {
     assertEquals(status.toString(), statusTag.toString());
   }
 
-  // TODO(zhangkun83): check sizes from tracer in checkTracerMetrics(StreamTracer, inbound, outbound);
+  // TODO(zhangkun83): check sizes from tracer in checkTracerMetrics(StreamTracer, inbound,
+  // outbound);
   private static void checkMetrics(MetricsRecord record, boolean server,
       Collection<? extends MessageLite> requests, Collection<? extends MessageLite> responses) {
     int uncompressedRequestsSize = 0;
