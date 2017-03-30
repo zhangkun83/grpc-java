@@ -57,6 +57,7 @@ import io.grpc.MethodDescriptor;
 import io.grpc.ServerCall;
 import io.grpc.ServerStreamTracer;
 import io.grpc.Status;
+import io.grpc.internal.CensusStreamTracerModule.ClientCallTracer;
 import io.grpc.internal.testing.StatsTestUtils;
 import io.grpc.internal.testing.StatsTestUtils.FakeStatsContextFactory;
 import io.grpc.testing.TestMethodDescriptors;
@@ -159,9 +160,7 @@ public class CensusStreamTracerModuleTest {
     CallOptions capturedCallOptions = callOptionsCaptor.getValue();
     assertEquals("customvalue", capturedCallOptions.getOption(CUSTOM_OPTION));
     assertEquals(1, capturedCallOptions.getStreamTracerFactories().size());
-    assertTrue(
-        capturedCallOptions.getStreamTracerFactories().get(0)
-        instanceof CensusStreamTracerModule.ClientTracerFactory);
+    assertTrue(capturedCallOptions.getStreamTracerFactories().get(0) instanceof ClientCallTracer);
 
     // Start the call
     Metadata headers = new Metadata();
@@ -195,10 +194,10 @@ public class CensusStreamTracerModuleTest {
   @Test
   public void clientBasicStats() {
     String methodName = MethodDescriptor.generateFullMethodName("Service1", "method1");
-    CensusStreamTracerModule.ClientTracerFactory tracerFactory =
-        census.newClientTracerFactory(statsCtxFactory.getDefault(), methodName);
+    ClientCallTracer callTracer =
+        census.newClientCallTracer(statsCtxFactory.getDefault(), methodName);
     Metadata headers = new Metadata();
-    ClientStreamTracer tracer = tracerFactory.newClientStreamTracer(headers);
+    ClientStreamTracer tracer = callTracer.newClientStreamTracer(headers);
 
     fakeClock.forwardTime(30, MILLISECONDS);
     tracer.headersSent();
@@ -217,7 +216,7 @@ public class CensusStreamTracerModuleTest {
     tracer.inboundWireSize(154);
     tracer.inboundUncompressedSize(552);
     tracer.streamClosed(Status.OK);
-    tracerFactory.callEnded(Status.OK);
+    callTracer.callEnded(Status.OK);
 
     StatsTestUtils.MetricsRecord record = statsCtxFactory.pollRecord();
     assertNotNull(record);
@@ -242,11 +241,11 @@ public class CensusStreamTracerModuleTest {
   @Test
   public void clientStreamNeverCreated() {
     String methodName = MethodDescriptor.generateFullMethodName("Service1", "method2");
-    CensusStreamTracerModule.ClientTracerFactory tracerFactory =
-        census.newClientTracerFactory(statsCtxFactory.getDefault(), methodName);
+    ClientCallTracer callTracer =
+        census.newClientCallTracer(statsCtxFactory.getDefault(), methodName);
 
     fakeClock.forwardTime(3000, MILLISECONDS);
-    tracerFactory.callEnded(Status.DEADLINE_EXCEEDED.withDescription("3 seconds"));
+    callTracer.callEnded(Status.DEADLINE_EXCEEDED.withDescription("3 seconds"));
 
     StatsTestUtils.MetricsRecord record = statsCtxFactory.pollRecord();
     assertNotNull(record);
@@ -275,11 +274,10 @@ public class CensusStreamTracerModuleTest {
     // the propagation by putting them in the headers.
     StatsContext clientCtx = statsCtxFactory.getDefault().with(
         StatsTestUtils.EXTRA_TAG, TagValue.create("extra-tag-value-897"));
-    CensusStreamTracerModule.ClientTracerFactory clientTracerFactory =
-        census.newClientTracerFactory(clientCtx, methodName);
+    ClientCallTracer callTracer = census.newClientCallTracer(clientCtx, methodName);
     Metadata headers = new Metadata();
     // This propagates clientCtx to headers
-    ClientStreamTracer clientTracer = clientTracerFactory.newClientStreamTracer(headers);
+    ClientStreamTracer clientTracer = callTracer.newClientStreamTracer(headers);
 
     ServerStreamTracer serverTracer =
         census.getServerTracerFactory().newServerStreamTracer(methodName, headers);
@@ -306,7 +304,7 @@ public class CensusStreamTracerModuleTest {
 
     // Verifies that the client tracer factory uses clientCtx, which includes the custom tags, to
     // record stats.
-    clientTracerFactory.callEnded(Status.OK);
+    callTracer.callEnded(Status.OK);
 
     StatsTestUtils.MetricsRecord clientRecord = statsCtxFactory.pollRecord();
     assertNotNull(clientRecord);

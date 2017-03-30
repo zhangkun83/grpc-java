@@ -122,11 +122,11 @@ final class CensusStreamTracerModule {
   }
 
   /**
-   * Creates a client tracer factory for a new call.
+   * Creates a {@link ClientCallTracer} for a new call.
    */
   @VisibleForTesting
-  ClientTracerFactory newClientTracerFactory(StatsContext parentCtx, String fullMethodName) {
-    return new ClientTracerFactory(parentCtx, fullMethodName);
+  ClientCallTracer newClientCallTracer(StatsContext parentCtx, String fullMethodName) {
+    return new ClientCallTracer(parentCtx, fullMethodName);
   }
 
   /**
@@ -191,7 +191,7 @@ final class CensusStreamTracerModule {
   }
 
   @VisibleForTesting
-  final class ClientTracerFactory extends ClientStreamTracer.Factory {
+  final class ClientCallTracer extends ClientStreamTracer.Factory {
 
     private final String fullMethodName;
     private final Stopwatch stopwatch;
@@ -199,7 +199,7 @@ final class CensusStreamTracerModule {
     private final AtomicBoolean callEnded = new AtomicBoolean(false);
     private final StatsContext parentCtx;
 
-    ClientTracerFactory(StatsContext parentCtx, String fullMethodName) {
+    ClientCallTracer(StatsContext parentCtx, String fullMethodName) {
       this.parentCtx = checkNotNull(parentCtx, "parentCtx");
       this.fullMethodName = checkNotNull(fullMethodName, "fullMethodName");
       this.stopwatch = stopwatchSupplier.get().start();
@@ -359,8 +359,8 @@ final class CensusStreamTracerModule {
       if (parentCtx == null) {
         parentCtx = statsCtxFactory.getDefault();
       }
-      final ClientTracerFactory tracerFactory =
-          newClientTracerFactory(parentCtx, method.getFullMethodName());
+      final ClientCallTracer tracerFactory =
+          newClientCallTracer(parentCtx, method.getFullMethodName());
       final ClientCall<ReqT, RespT> call =
           next.newCall(method, callOptions.withStreamTracerFactory(tracerFactory));
       return new ForwardingClientCall<ReqT, RespT>() {
