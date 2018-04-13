@@ -238,8 +238,16 @@ public abstract class AbstractServerImplBuilder<T extends AbstractServerImplBuil
 
   @Override
   public Server build() {
+    List<ServerInterceptor> defaultInterceptors;
+    if (statsEnabled && recordFinishedRpcs) {
+      defaultInterceptors =
+          Collections.singletonList(new CensusStatsModule.StatsServerInterceptor());
+    } else {
+      defaultInterceptors = Collections.emptyList();
+    }
     ServerImpl server = new ServerImpl(
         this,
+        defaultInterceptors,
         buildTransportServer(Collections.unmodifiableList(getTracerFactories())),
         Context.ROOT);
     for (InternalNotifyOnServerBuild notifyTarget : notifyOnBuildList) {

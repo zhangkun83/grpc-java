@@ -116,11 +116,13 @@ public final class ServerImpl extends io.grpc.Server implements Instrumented<Ser
    * Construct a server.
    *
    * @param builder builder with configuration for server
+   * @param defaultInterceptors interceptors always run before user-added ones
    * @param transportServer transport server that will create new incoming transports
    * @param rootContext context that callbacks for new RPCs should be derived from
    */
   ServerImpl(
       AbstractServerImplBuilder<?> builder,
+      List<ServerInterceptor> defaultInterceptors,
       InternalServer transportServer,
       Context rootContext) {
     this.executorPool = Preconditions.checkNotNull(builder.executorPool, "executorPool");
@@ -135,8 +137,12 @@ public final class ServerImpl extends io.grpc.Server implements Instrumented<Ser
     this.compressorRegistry = builder.compressorRegistry;
     this.transportFilters = Collections.unmodifiableList(
         new ArrayList<ServerTransportFilter>(builder.transportFilters));
-    this.interceptors =
-        builder.interceptors.toArray(new ServerInterceptor[builder.interceptors.size()]);
+    ArrayList<ServerInterceptor> interceptorList =
+        new ArrayList<ServerInterceptor>(builder.interceptors.size() + defaultInterceptors.size());
+    // Make sure default interceptors are added after (thus run before) the user-added interceptors
+    interceptorList.addAll(builder.interceptors);
+    interceptorList.addAll(defaultInterceptors);
+    this.interceptors = interceptorList.toArray(new ServerInterceptor[interceptorList.size()]);
     this.handshakeTimeoutMillis = builder.handshakeTimeoutMillis;
     this.binlogProvider = builder.binlogProvider;
     this.channelz = builder.channelz;

@@ -33,6 +33,9 @@ import io.grpc.ForwardingClientCall.SimpleForwardingClientCall;
 import io.grpc.ForwardingClientCallListener.SimpleForwardingClientCallListener;
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
+import io.grpc.ServerCall;
+import io.grpc.ServerCallHandler;
+import io.grpc.ServerInterceptor;
 import io.grpc.ServerStreamTracer;
 import io.grpc.Status;
 import io.grpc.StreamTracer;
@@ -69,6 +72,20 @@ public final class CensusStatsModule {
   private static final Logger logger = Logger.getLogger(CensusStatsModule.class.getName());
   private static final double NANOS_PER_MILLI = TimeUnit.MILLISECONDS.toNanos(1);
   private static final ClientTracer BLANK_CLIENT_TRACER = new ClientTracer();
+  private static final Context.Key<Stopwatch> SERVER_TIME_STOPWATCH =
+      Context.key("io.grpc.internal.CensusStatsModule.SERVER_TIME_STOPWATCH");
+  private static final Metadata.Key<ServerStats> SERVER_STATS_TRAILER =
+      Metadata.Key.of("census-server-stats-bin", new Metadata.BinaryMarshaller<ServerStats>() {
+          @Override
+          public byte[] toBytes(ServerStats serverStats) {
+            return serverStats.toBytes();
+          }
+
+          @Override
+          public ServerStats parseBytes(byte[] serialized) {
+            return ServerStats.fromBytes(serialized);
+          }
+        });
 
   private final Tagger tagger;
   private final StatsRecorder statsRecorder;
@@ -382,7 +399,6 @@ public final class CensusStatsModule {
       if (!recordFinishedRpcs) {
         return;
       }
-      stopwatch.stop();
       long roundtripNanos = stopwatch.elapsed(TimeUnit.NANOSECONDS);
       ClientTracer tracer = streamTracer;
       if (tracer == null) {
@@ -589,7 +605,6 @@ public final class CensusStatsModule {
       if (!recordFinishedRpcs) {
         return;
       }
-      stopwatch.stop();
       long elapsedTimeNanos = stopwatch.elapsed(TimeUnit.NANOSECONDS);
       MeasureMap measureMap = module.statsRecorder.newMeasureMap()
           .put(RpcMeasureConstants.RPC_SERVER_FINISHED_COUNT, 1)
@@ -615,9 +630,18 @@ public final class CensusStatsModule {
     @Override
     public Context filterContext(Context context) {
       if (!tagger.empty().equals(parentCtx)) {
-        return context.withValue(TAG_CONTEXT_KEY, parentCtx);
+        if (recordFinishedRpcs) {
+          return context.withValue(TAG_CONTEXT_KEY, parentCtx, SERVER_TIME_STOPWATCH, stopwatch);
+        } else {
+          return context.withValue(TAG_CONTEXT_KEY, parentCtx);
+        }
+      } else {
+        if (recordFinishedRpcs) {
+          return context.withValue(SERVER_TIME_STOPWATCH, stopwatch);
+        } else {
+          return context;
+        }
       }
-      return context;
     }
   }
 
@@ -687,6 +711,27 @@ public final class CensusStatsModule {
               headers);
         }
       };
+    }
+  }
+
+  final static class StatsServerInterceptor implements ServerInterceptor {
+    @Override
+    public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
+        ServerCall<ReqT, RespT> call,
+        Metadata headers,
+        ServerCallHandler<ReqT, RespT> next) {
+      return next.startCall(
+          new SimpleForwardingServerCall<ReqT, RespT>(call) {
+            @Override
+            public void close(Status status, Metadata trailers) {
+              Stopwatch stopwatch = SERVER_TIME_STOPWATCH.get();
+              checkNotNull(stopwatch, "stopwatch");
+              long nanos = stopwatch.elapsed(TimeUnit.NANOSECONDS);
+              trailers.discardAll(SERVER_STATS_TRAILER);
+              trailers.put(SERVER_STATS_TRAILER, new ServerStats(nanos));
+            }
+          },
+          headers);
     }
   }
 }
