@@ -1,5 +1,14 @@
 description = 'gRPC: Core'
 
+sourceSets {
+  testWithGrpclb {
+    java {
+      compileClasspath += main.output
+      runtimeClasspath += main.output
+    }
+  }
+}
+
 dependencies {
     compile project(':grpc-context'),
             libraries.gson,
@@ -28,8 +37,10 @@ dependencies {
     }
 
     testCompile project(':grpc-context').sourceSets.test.output,
-            project(':grpc-testing'),
-            project(':grpc-grpclb')
+            project(':grpc-testing')
+    testWithGrpclbCompile project(':grpc-grpclb'),
+            libraries.junit,
+            libraries.truth
 
     signature "org.codehaus.mojo.signature:java16:1.1@signature"
 }
@@ -38,6 +49,11 @@ javadoc {
     // We want io.grpc.Internal, but not io.grpc.Internal*
     exclude 'io/grpc/Internal?*.java'
     exclude 'io/grpc/internal/**'
+}
+
+task testWithGrpclb(type: Test) {
+    testClassesDirs = sourceSets.testWithGrpclb.output.classesDirs
+    classpath = sourceSets.testWithGrpclb.runtimeClasspath
 }
 
 animalsniffer {

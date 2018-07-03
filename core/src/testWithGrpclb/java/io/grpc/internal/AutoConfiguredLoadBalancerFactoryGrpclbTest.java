@@ -48,10 +48,10 @@ import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
 /**
- * Unit tests for {@link AutoConfiguredLoadBalancerFactory}.
+ * Unit tests for {@link AutoConfiguredLoadBalancerFactory} with GRPCLB available.
  */
 @RunWith(JUnit4.class)
-public class AutoConfiguredLoadBalancerFactoryTest {
+public class AutoConfiguredLoadBalancerFactoryGrpclbTest {
   private final AutoConfiguredLoadBalancerFactory lbf = new AutoConfiguredLoadBalancerFactory();
 
   @Test
