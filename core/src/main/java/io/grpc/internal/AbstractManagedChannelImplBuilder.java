@@ -30,6 +30,7 @@ import io.grpc.EquivalentAddressGroup;
 import io.grpc.LoadBalancer;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
+import io.grpc.NameResolver.NameResolverParams;
 import io.grpc.NameResolver;
 import io.grpc.NameResolverProvider;
 import io.opencensus.trace.Tracing;
@@ -452,7 +453,7 @@ public abstract class AbstractManagedChannelImplBuilder
    * NameResolver.Factory#newNameResolver}. The default implementation returns {@link
    * Attributes#EMPTY}.
    */
-  protected Attributes getNameResolverParams() {
+  protected Attributes<NameResolverParams> getNameResolverParams() {
     return Attributes.EMPTY;
   }
 

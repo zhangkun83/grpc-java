@@ -21,6 +21,7 @@ import io.grpc.Attributes;
 import io.grpc.Compressor;
 import io.grpc.Deadline;
 import io.grpc.DecompressorRegistry;
+import io.grpc.Grpc.TransportAttrs;
 import io.grpc.Status;
 import java.io.InputStream;
 
@@ -103,7 +104,7 @@ abstract class ForwardingClientStream implements ClientStream {
   }
 
   @Override
-  public Attributes getAttributes() {
+  public Attributes<TransportAttrs> getAttributes() {
     return delegate().getAttributes();
   }
 

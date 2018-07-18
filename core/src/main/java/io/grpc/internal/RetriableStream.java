@@ -27,6 +27,7 @@ import io.grpc.ClientStreamTracer;
 import io.grpc.Compressor;
 import io.grpc.Deadline;
 import io.grpc.DecompressorRegistry;
+import io.grpc.Grpc.TransportAttrs;
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
 import io.grpc.Status;
@@ -499,11 +500,11 @@ abstract class RetriableStream<ReqT> implements ClientStream {
   }
 
   @Override
-  public final Attributes getAttributes() {
+  public final Attributes<TransportAttrs> getAttributes() {
     if (state.winningSubstream != null) {
       return state.winningSubstream.stream.getAttributes();
     }
-    return Attributes.EMPTY;
+    return Attributes.getEmpty(TransportAttrs.class);
   }
 
   private static Random random = new Random();

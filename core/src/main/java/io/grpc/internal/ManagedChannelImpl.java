@@ -50,6 +50,7 @@ import io.grpc.LoadBalancer.SubchannelPicker;
 import io.grpc.ManagedChannel;
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
+import io.grpc.NameResolver.NameResolverParams;
 import io.grpc.NameResolver;
 import io.grpc.Status;
 import io.grpc.internal.Channelz.ChannelStats;
@@ -110,7 +111,7 @@ final class ManagedChannelImpl extends ManagedChannel implements Instrumented<Ch
   private final LogId logId = LogId.allocate(getClass().getName());
   private final String target;
   private final NameResolver.Factory nameResolverFactory;
-  private final Attributes nameResolverParams;
+  private final Attributes<NameResolverParams> nameResolverParams;
   private final LoadBalancer.Factory loadBalancerFactory;
   private final ClientTransportFactory transportFactory;
   private final Executor executor;

@@ -25,18 +25,21 @@ import java.net.SocketAddress;
  * A data structure to associate a {@link SocketAddress} with {@link Attributes}.
  */
 final class PairSocketAddress extends SocketAddress {
+  public interface PairSocketAddressAttrs extends io.grpc.Category {
+  }
+
   private static final long serialVersionUID = -6854992294603212793L;
 
   private final SocketAddress address;
-  private final Attributes attributes;
+  private final Attributes<PairSocketAddressAttrs> attributes;
 
   @VisibleForTesting
-  PairSocketAddress(SocketAddress address, Attributes attributes) {
+  PairSocketAddress(SocketAddress address, Attributes<PairSocketAddressAttrs> attributes) {
     this.address = Preconditions.checkNotNull(address);
     this.attributes = Preconditions.checkNotNull(attributes);
   }
 
-  public Attributes getAttributes() {
+  public Attributes<PairSocketAddressAttrs> getAttributes() {
     return attributes;
   }
 

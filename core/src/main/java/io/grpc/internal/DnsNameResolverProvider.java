@@ -18,6 +18,7 @@ package io.grpc.internal;
 
 import com.google.common.base.Preconditions;
 import io.grpc.Attributes;
+import io.grpc.NameResolver.NameResolverParams;
 import io.grpc.NameResolverProvider;
 import java.net.URI;
 
@@ -41,7 +42,7 @@ public final class DnsNameResolverProvider extends NameResolverProvider {
   private static final String SCHEME = "dns";
 
   @Override
-  public DnsNameResolver newNameResolver(URI targetUri, Attributes params) {
+  public DnsNameResolver newNameResolver(URI targetUri, Attributes<NameResolverParams> params) {
     if (SCHEME.equals(targetUri.getScheme())) {
       String targetPath = Preconditions.checkNotNull(targetUri.getPath(), "targetPath");
       Preconditions.checkArgument(targetPath.startsWith("/"),

@@ -31,6 +31,7 @@ import static java.lang.Math.max;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.MoreObjects;
 import io.grpc.Attributes;
+import io.grpc.Grpc.TransportAttrs;
 import io.grpc.CallOptions;
 import io.grpc.ClientCall;
 import io.grpc.Codec;
@@ -448,11 +449,11 @@ final class ClientCallImpl<ReqT, RespT> extends ClientCall<ReqT, RespT> {
   }
 
   @Override
-  public Attributes<ClientCallAttrs> getAttributes() {
+  public Attributes<TransportAttrs> getAttributes() {
     if (stream != null) {
       return stream.getAttributes();
     }
-    return Attributes.getEmpty(ClientCallAttrs.class);
+    return Attributes.getEmpty(TransportAttrs.class);
   }
 
   private void closeObserver(Listener<RespT> observer, Status status, Metadata trailers) {

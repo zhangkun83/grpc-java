@@ -35,12 +35,12 @@ import javax.annotation.concurrent.Immutable;
 @Immutable
 public final class Attributes<C extends Category> {
 
-  private final Map<Key<?, ? extends C>, Object> data;
+  private final Map<Key<?, C>, Object> data;
 
   private static final Attributes<Category> EMPTY =
-      new Attributes<Category>(Collections.<Key<?, ? extends Category>, Object>emptyMap());
+      new Attributes<Category>(Collections.<Key<?, Category>, Object>emptyMap());
 
-  private Attributes(Map<Key<?, ? extends C>, Object> data) {
+  private Attributes(Map<Key<?, C>, Object> data) {
     assert data != null;
     this.data = data;
   }
@@ -50,7 +50,7 @@ public final class Attributes<C extends Category> {
    */
   @SuppressWarnings("unchecked")
   @Nullable
-  public <T> T get(Key<T, ? extends C> key) {
+  public <T> T get(Key<T, C> key) {
     return (T) data.get(key);
   }
 
@@ -63,11 +63,11 @@ public final class Attributes<C extends Category> {
    *     <a href="https://github.com/grpc/grpc-java/issues/1764">grpc-java/issues/1764</a>.
    */
   @Deprecated
-  public Set<Key<?, ? extends C>> keys() {
+  public Set<Key<?, C>> keys() {
     return Collections.unmodifiableSet(data.keySet());
   }
 
-  Set<Key<?, ? extends C>> keysForTest() {
+  Set<Key<?, C>> keysForTest() {
     return Collections.unmodifiableSet(data.keySet());
   }
 
@@ -160,6 +160,7 @@ public final class Attributes<C extends Category> {
    * @return true if the given object is a {@link Attributes} equal attributes.
    */
   @Override
+  @SuppressWarnings("unchecked")
   public boolean equals(Object o) {
     if (this == o) {
       return true;
@@ -167,11 +168,11 @@ public final class Attributes<C extends Category> {
     if (o == null || getClass() != o.getClass()) {
       return false;
     }
-    Attributes<? extends Category> that = (Attributes<? extends Category>) o;
+    Attributes<Category> that = (Attributes<Category>) o;
     if (data.size() != that.data.size()) {
       return false;
     }
-    for (Entry<Key<?, ? extends C>, Object> e : data.entrySet()) {
+    for (Entry<Key<?, C>, Object> e : data.entrySet()) {
       if (!that.data.containsKey(e.getKey())) {
         return false;
       }
@@ -194,7 +195,7 @@ public final class Attributes<C extends Category> {
   @Override
   public int hashCode() {
     int hashCode = 0;
-    for (Entry<Key<?, ? extends C>, Object> e : data.entrySet()) {
+    for (Entry<Key<?, C>, Object> e : data.entrySet()) {
       hashCode += Objects.hashCode(e.getKey(), e.getValue());
     }
     return hashCode;
@@ -205,26 +206,26 @@ public final class Attributes<C extends Category> {
    */
   public static final class Builder<C extends Category> {
     private Attributes<C> base;
-    private Map<Key<?, ? extends C>, Object> newdata;
+    private Map<Key<?, C>, Object> newdata;
 
     private Builder(Attributes<C> base) {
       assert base != null;
       this.base = base;
     }
 
-    private Map<Key<?, ? extends C>, Object> data(int size) {
+    private Map<Key<?, C>, Object> data(int size) {
       if (newdata == null) {
-        newdata = new IdentityHashMap<Key<?, ? extends C>, Object>(size);
+        newdata = new IdentityHashMap<Key<?, C>, Object>(size);
       }
       return newdata;
     }
 
-    public <T, C1 extends C> Builder<C> set(Key<T, C1> key, T value) {
+    public <T> Builder<C> set(Key<T, C> key, T value) {
       data(1).put(key, value);
       return this;
     }
 
-    public <C1 extends C> Builder<C> setAll(Attributes<C1> other) {
+    public Builder<C> setAll(Attributes<C> other) {
       data(other.data.size()).putAll(other.data);
       return this;
     }
@@ -234,7 +235,7 @@ public final class Attributes<C extends Category> {
      */
     public Attributes<C> build() {
       if (newdata != null) {
-        for (Entry<Key<?, ? extends C>, Object> entry : base.data.entrySet()) {
+        for (Entry<Key<?, C>, Object> entry : base.data.entrySet()) {
           if (!newdata.containsKey(entry.getKey())) {
             newdata.put(entry.getKey(), entry.getValue());
           }

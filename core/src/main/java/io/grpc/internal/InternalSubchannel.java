@@ -34,6 +34,7 @@ import io.grpc.Attributes;
 import io.grpc.CallOptions;
 import io.grpc.ConnectivityState;
 import io.grpc.ConnectivityStateInfo;
+import io.grpc.EquivalentAddressGroup.EagAttrs;
 import io.grpc.EquivalentAddressGroup;
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
@@ -756,7 +757,7 @@ final class InternalSubchannel implements Instrumented<ChannelStats> {
       return addressGroups.get(groupIndex).getAddresses().get(addressIndex);
     }
 
-    public Attributes getCurrentEagAttributes() {
+    public Attributes<EagAttrs> getCurrentEagAttributes() {
       return addressGroups.get(groupIndex).getAttributes();
     }
 

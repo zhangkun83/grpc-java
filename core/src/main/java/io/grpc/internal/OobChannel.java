@@ -165,8 +165,8 @@ final class OobChannel extends ManagedChannel implements Instrumented<ChannelSta
         }
 
         @Override
-        public Attributes getAttributes() {
-          return Attributes.EMPTY;
+        public Attributes<LoadBalancer.SubchannelAttrs> getAttributes() {
+          return Attributes.getEmpty(LoadBalancer.SubchannelAttrs.class);
         }
     };
 

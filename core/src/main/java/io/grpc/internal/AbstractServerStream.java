@@ -19,6 +19,7 @@ package io.grpc.internal;
 import com.google.common.base.Preconditions;
 import io.grpc.Attributes;
 import io.grpc.Decompressor;
+import io.grpc.Grpc.TransportAttrs;
 import io.grpc.InternalStatus;
 import io.grpc.Metadata;
 import io.grpc.Status;
@@ -162,8 +163,8 @@ public abstract class AbstractServerStream extends AbstractStream
     transportState().setDecompressor(Preconditions.checkNotNull(decompressor, "decompressor"));
   }
 
-  @Override public Attributes getAttributes() {
-    return Attributes.EMPTY;
+  @Override public Attributes<TransportAttrs> getAttributes() {
+    return Attributes.getEmpty(TransportAttrs.class);
   }
 
   @Override

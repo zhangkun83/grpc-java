@@ -18,6 +18,7 @@ package io.grpc;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
+import io.grpc.NameResolver.NameResolverParams;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -36,7 +37,7 @@ public abstract class NameResolverProvider extends NameResolver.Factory {
    * The port number used in case the target or the underlying naming system doesn't provide a
    * port number.
    */
-  public static final Attributes.Key<Integer, NameResolver.NameResolverAttrs> PARAMS_DEFAULT_PORT =
+  public static final Attributes.Key<Integer, NameResolverParams> PARAMS_DEFAULT_PORT =
       NameResolver.Factory.PARAMS_DEFAULT_PORT;
   @VisibleForTesting
   static final Iterable<Class<?>> HARDCODED_CLASSES = new HardcodedClasses();
@@ -97,7 +98,7 @@ public abstract class NameResolverProvider extends NameResolver.Factory {
     }
 
     @Override
-    public NameResolver newNameResolver(URI targetUri, Attributes params) {
+    public NameResolver newNameResolver(URI targetUri, Attributes<NameResolverParams> params) {
       checkForProviders();
       for (NameResolverProvider provider : providers) {
         NameResolver resolver = provider.newNameResolver(targetUri, params);

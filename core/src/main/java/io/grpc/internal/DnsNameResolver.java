@@ -187,7 +187,7 @@ final class DnsNameResolver extends NameResolver {
                     new PairSocketAddress(
                         destination,
                         Attributes
-                            .newBuilder()
+                            .<PairSocketAddress.PairSocketAddressAttrs>newBuilder()
                             .set(ProxyDetector.PROXY_PARAMS_KEY, proxy)
                             .build()));
             savedListener.onAddresses(

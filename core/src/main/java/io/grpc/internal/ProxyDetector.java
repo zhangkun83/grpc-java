@@ -17,6 +17,7 @@
 package io.grpc.internal;
 
 import io.grpc.Attributes;
+import io.grpc.internal.PairSocketAddress.PairSocketAddressAttrs;
 import java.io.IOException;
 import java.net.SocketAddress;
 import javax.annotation.Nullable;
@@ -28,9 +29,6 @@ import javax.annotation.Nullable;
  * {@link io.grpc.NameResolver}.
  */
 public interface ProxyDetector {
-  public interface PairSocketAddressAttrs extends io.grpc.Category {
-  }
-
   Attributes.Key<ProxyParameters, PairSocketAddressAttrs> PROXY_PARAMS_KEY =
       Attributes.Key.create("proxy-params-key", PairSocketAddressAttrs.class);
   /**

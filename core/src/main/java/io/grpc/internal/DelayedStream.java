@@ -24,6 +24,7 @@ import io.grpc.Attributes;
 import io.grpc.Compressor;
 import io.grpc.Deadline;
 import io.grpc.DecompressorRegistry;
+import io.grpc.Grpc.TransportAttrs;
 import io.grpc.Metadata;
 import io.grpc.Status;
 import java.io.InputStream;
@@ -212,7 +213,7 @@ class DelayedStream implements ClientStream {
   }
 
   @Override
-  public Attributes getAttributes() {
+  public Attributes<TransportAttrs> getAttributes() {
     checkState(passThrough, "Called getAttributes before attributes are ready");
     return realStream.getAttributes();
   }

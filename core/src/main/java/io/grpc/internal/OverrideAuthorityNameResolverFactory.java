@@ -17,6 +17,7 @@
 package io.grpc.internal;
 
 import io.grpc.Attributes;
+import io.grpc.NameResolver.NameResolverParams;
 import io.grpc.NameResolver;
 import java.net.URI;
 import javax.annotation.Nullable;
@@ -43,7 +44,7 @@ final class OverrideAuthorityNameResolverFactory extends NameResolver.Factory {
 
   @Nullable
   @Override
-  public NameResolver newNameResolver(URI targetUri, Attributes params) {
+  public NameResolver newNameResolver(URI targetUri, Attributes<NameResolverParams> params) {
     final NameResolver resolver = delegate.newNameResolver(targetUri, params);
     // Do not wrap null values. We do not want to impede error signaling.
     if (resolver == null) {
