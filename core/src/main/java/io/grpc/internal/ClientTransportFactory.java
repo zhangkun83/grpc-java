@@ -19,6 +19,7 @@ package io.grpc.internal;
 import com.google.common.base.Objects;
 import com.google.common.base.Preconditions;
 import io.grpc.Attributes;
+import io.grpc.EquivalentAddressGroup.EagAttrs;
 import java.io.Closeable;
 import java.net.SocketAddress;
 import java.util.concurrent.ScheduledExecutorService;
@@ -66,7 +67,7 @@ public interface ClientTransportFactory extends Closeable {
    */
   public static final class ClientTransportOptions {
     private String authority = "unknown-authority";
-    private Attributes eagAttributes = Attributes.EMPTY;
+    private Attributes<EagAttrs> eagAttributes = Attributes.getEmpty(EagAttrs.class);
     private @Nullable String userAgent;
     private @Nullable ProxyParameters proxyParameters;
 
@@ -80,12 +81,12 @@ public interface ClientTransportFactory extends Closeable {
       return this;
     }
 
-    public Attributes getEagAttributes() {
+    public Attributes<EagAttrs> getEagAttributes() {
       return eagAttributes;
     }
 
     /** Sets the non-null EquivalentAddressGroup's attributes. */
-    public ClientTransportOptions setEagAttributes(Attributes eagAttributes) {
+    public ClientTransportOptions setEagAttributes(Attributes<EagAttrs> eagAttributes) {
       Preconditions.checkNotNull(eagAttributes, "eagAttributes");
       this.eagAttributes = eagAttributes;
       return this;

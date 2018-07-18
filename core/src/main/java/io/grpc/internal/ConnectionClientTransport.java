@@ -28,5 +28,5 @@ public interface ConnectionClientTransport extends ManagedClientTransport {
    * Returns a set of attributes, which may vary depending on the state of the transport. The keys
    * should define in what states they will be present.
    */
-  Attributes getAttributes();
+  Attributes<io.grpc.Grpc.TransportAttrs> getAttributes();
 }

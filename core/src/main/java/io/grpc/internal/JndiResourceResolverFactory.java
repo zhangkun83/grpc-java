@@ -149,7 +149,7 @@ final class JndiResourceResolverFactory implements DnsNameResolver.ResourceResol
           for (InetAddress addr : addrs) {
             sockaddrs.add(new InetSocketAddress(addr, record.port));
           }
-          Attributes attrs = Attributes.newBuilder()
+          Attributes<EquivalentAddressGroup.EagAttrs> attrs = Attributes.<EquivalentAddressGroup.EagAttrs>newBuilder()
               .set(GrpcAttributes.ATTR_LB_ADDR_AUTHORITY, record.host)
               .build();
           balancerAddresses.add(

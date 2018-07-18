@@ -28,7 +28,11 @@ import javax.annotation.Nullable;
  * {@link io.grpc.NameResolver}.
  */
 public interface ProxyDetector {
-  Attributes.Key<ProxyParameters> PROXY_PARAMS_KEY = Attributes.Key.create("proxy-params-key");
+  public interface PairSocketAddressAttrs extends io.grpc.Category {
+  }
+
+  Attributes.Key<ProxyParameters, PairSocketAddressAttrs> PROXY_PARAMS_KEY =
+      Attributes.Key.create("proxy-params-key", PairSocketAddressAttrs.class);
   /**
    * Given a target address, returns which proxy address should be used. If no proxy should be
    * used, then return value will be null. The address of the {@link ProxyParameters} is always

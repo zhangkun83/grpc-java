@@ -19,6 +19,7 @@ package io.grpc;
 import com.google.common.base.MoreObjects;
 import com.google.common.base.Objects;
 import com.google.common.base.Preconditions;
+import io.grpc.EquivalentAddressGroup.EagAttrs;
 import java.util.Collections;
 import java.util.List;
 import javax.annotation.Nonnull;
@@ -111,7 +112,7 @@ public abstract class LoadBalancer {
    * @since 1.2.0
    */
   public abstract void handleResolvedAddressGroups(
-      List<EquivalentAddressGroup> servers, Attributes attributes);
+      List<EquivalentAddressGroup> servers, Attributes<NameResolver.NameResolverAttrs> attributes);
 
   /**
    * Handles an error from the name resolution system.
@@ -461,7 +462,7 @@ public abstract class LoadBalancer {
      *
      * @since 1.2.0
      */
-    public Subchannel createSubchannel(EquivalentAddressGroup addrs, Attributes attrs) {
+    public Subchannel createSubchannel(EquivalentAddressGroup addrs, Attributes<SubchannelAttrs> attrs) {
       Preconditions.checkNotNull(addrs, "addrs");
       return createSubchannel(Collections.singletonList(addrs), attrs);
     }
@@ -478,7 +479,7 @@ public abstract class LoadBalancer {
      * @throws IllegalArgumentException if {@code addrs} is empty
      * @since 1.14.0
      */
-    public Subchannel createSubchannel(List<EquivalentAddressGroup> addrs, Attributes attrs) {
+    public Subchannel createSubchannel(List<EquivalentAddressGroup> addrs, Attributes<SubchannelAttrs> attrs) {
       throw new UnsupportedOperationException();
     }
 
@@ -648,7 +649,7 @@ public abstract class LoadBalancer {
      *
      * @since 1.2.0
      */
-    public abstract Attributes getAttributes();
+    public abstract Attributes<SubchannelAttrs> getAttributes();
   }
 
   /**
@@ -664,5 +665,8 @@ public abstract class LoadBalancer {
      * @since 1.2.0
      */
     public abstract LoadBalancer newLoadBalancer(Helper helper);
+  }
+
+  public interface SubchannelAttrs extends Category {
   }
 }

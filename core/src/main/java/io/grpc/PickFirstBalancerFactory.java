@@ -64,9 +64,9 @@ public final class PickFirstBalancerFactory extends LoadBalancer.Factory {
 
     @Override
     public void handleResolvedAddressGroups(
-        List<EquivalentAddressGroup> servers, Attributes attributes) {
+        List<EquivalentAddressGroup> servers, Attributes<NameResolver.NameResolverAttrs> attributes) {
       if (subchannel == null) {
-        subchannel = helper.createSubchannel(servers, Attributes.EMPTY);
+        subchannel = helper.createSubchannel(servers, Attributes.getEmpty(SubchannelAttrs.class));
 
         // The channel state does not get updated when doing name resolving today, so for the moment
         // let LB report CONNECTION and call subchannel.requestConnection() immediately.

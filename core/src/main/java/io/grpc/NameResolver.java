@@ -81,6 +81,12 @@ public abstract class NameResolver {
    */
   public void refresh() {}
 
+  public interface NameResolverAttrs extends Category {
+  }
+
+  public interface NameResolverParams extends Category {
+  }
+
   /**
    * Factory that creates {@link NameResolver} instances.
    *
@@ -93,8 +99,8 @@ public abstract class NameResolver {
      *
      * @since 1.0.0
      */
-    public static final Attributes.Key<Integer> PARAMS_DEFAULT_PORT =
-        Attributes.Key.create("params-default-port");
+    public static final Attributes.Key<Integer, NameResolverParams> PARAMS_DEFAULT_PORT =
+        Attributes.Key.create("params-default-port", NameResolverParams.class);
 
     /**
      * Creates a {@link NameResolver} for the given target URI, or {@code null} if the given URI
@@ -107,7 +113,7 @@ public abstract class NameResolver {
      * @since 1.0.0
      */
     @Nullable
-    public abstract NameResolver newNameResolver(URI targetUri, Attributes params);
+    public abstract NameResolver newNameResolver(URI targetUri, Attributes<NameResolverParams> params);
 
     /**
      * Returns the default scheme, which will be used to construct a URI when {@link
@@ -137,7 +143,7 @@ public abstract class NameResolver {
      * @param attributes extra metadata from naming system
      * @since 1.3.0
      */
-    void onAddresses(List<EquivalentAddressGroup> servers, Attributes attributes);
+    void onAddresses(List<EquivalentAddressGroup> servers, Attributes<NameResolverAttrs> attributes);
 
     /**
      * Handles an error from the resolver. The listener is responsible for eventually invoking

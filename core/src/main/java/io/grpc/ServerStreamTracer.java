@@ -76,7 +76,7 @@ public abstract class ServerStreamTracer extends StreamTracer {
   public abstract static class ServerCallInfo<ReqT, RespT> {
     public abstract MethodDescriptor<ReqT, RespT> getMethodDescriptor();
 
-    public abstract Attributes getAttributes();
+    public abstract Attributes<ServerCall.ServerCallAttrs> getAttributes();
 
     @Nullable
     public abstract String getAuthority();
@@ -107,7 +107,7 @@ public abstract class ServerStreamTracer extends StreamTracer {
     }
 
     @Override
-    public Attributes getAttributes() {
+    public Attributes<ServerCallAttrs> getAttributes() {
       return callInfo.getAttributes();
     }
 

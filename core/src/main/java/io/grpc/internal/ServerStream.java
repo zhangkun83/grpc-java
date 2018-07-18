@@ -73,7 +73,7 @@ public interface ServerStream extends Stream {
    *
    * @return Attributes container
    */
-  Attributes getAttributes();
+  Attributes<io.grpc.Grpc.TransportAttrs> getAttributes();
 
   /**
    * Gets the authority this stream is addressed to.

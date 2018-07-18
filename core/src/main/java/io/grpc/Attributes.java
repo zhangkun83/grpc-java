@@ -33,13 +33,14 @@ import javax.annotation.concurrent.Immutable;
  */
 @ExperimentalApi("https://github.com/grpc/grpc-java/issues/1764")
 @Immutable
-public final class Attributes {
+public final class Attributes<C extends Category> {
 
-  private final Map<Key<?>, Object> data;
+  private final Map<Key<?, ? extends C>, Object> data;
 
-  public static final Attributes EMPTY = new Attributes(Collections.<Key<?>, Object>emptyMap());
+  private static final Attributes<Category> EMPTY =
+      new Attributes<Category>(Collections.<Key<?, ? extends Category>, Object>emptyMap());
 
-  private Attributes(Map<Key<?>, Object> data) {
+  private Attributes(Map<Key<?, ? extends C>, Object> data) {
     assert data != null;
     this.data = data;
   }
@@ -49,7 +50,7 @@ public final class Attributes {
    */
   @SuppressWarnings("unchecked")
   @Nullable
-  public <T> T get(Key<T> key) {
+  public <T> T get(Key<T, ? extends C> key) {
     return (T) data.get(key);
   }
 
@@ -62,11 +63,11 @@ public final class Attributes {
    *     <a href="https://github.com/grpc/grpc-java/issues/1764">grpc-java/issues/1764</a>.
    */
   @Deprecated
-  public Set<Key<?>> keys() {
+  public Set<Key<?, ? extends C>> keys() {
     return Collections.unmodifiableSet(data.keySet());
   }
 
-  Set<Key<?>> keysForTest() {
+  Set<Key<?, ? extends C>> keysForTest() {
     return Collections.unmodifiableSet(data.keySet());
   }
 
@@ -76,24 +77,25 @@ public final class Attributes {
    *     This method will be removed in the future.
    */
   @Deprecated
-  public static Builder newBuilder(Attributes base) {
+  public static <C extends Category> Builder<C> newBuilder(Attributes<C> base) {
     checkNotNull(base, "base");
-    return new Builder(base);
+    return new Builder<C>(base);
   }
 
   /**
    * Create a new builder.
    */
-  public static Builder newBuilder() {
-    return new Builder(EMPTY);
+  @SuppressWarnings("unchecked")
+  public static <C extends Category> Builder<C> newBuilder() {
+    return new Builder<C>((Attributes<C>) EMPTY);
   }
 
   /**
    * Creates a new builder that is pre-populated with the content of this container.
    * @return a new builder.
    */
-  public Builder toBuilder() {
-    return new Builder(this);
+  public Builder<C> toBuilder() {
+    return new Builder<C>(this);
   }
 
   /**
@@ -101,11 +103,13 @@ public final class Attributes {
    * @param <T> type of the value in the key-value pair
    */
   @Immutable
-  public static final class Key<T> {
+  public static final class Key<T, C extends Category> {
     private final String debugString;
+    private final Class<C> cat;
 
-    private Key(String debugString) {
+    private Key(String debugString, Class<C> cat) {
       this.debugString = debugString;
+      this.cat = cat;
     }
 
     @Override
@@ -122,8 +126,8 @@ public final class Attributes {
      * @deprecated use {@link #create} instead. This method will be removed in the future.
      */
     @Deprecated
-    public static <T> Key<T> of(String debugString) {
-      return new Key<T>(debugString);
+    public static <T> Key<T, Category> of(String debugString) {
+      return new Key<T, Category>(debugString, Category.class);
     }
 
     /**
@@ -133,8 +137,8 @@ public final class Attributes {
      * @param <T> Key type
      * @return Key object
      */
-    public static <T> Key<T> create(String debugString) {
-      return new Key<T>(debugString);
+    public static <T, C extends Category> Key<T, C> create(String debugString, Class<C> cat) {
+      return new Key<T, C>(debugString, cat);
     }
   }
 
@@ -163,11 +167,11 @@ public final class Attributes {
     if (o == null || getClass() != o.getClass()) {
       return false;
     }
-    Attributes that = (Attributes) o;
+    Attributes<? extends Category> that = (Attributes<? extends Category>) o;
     if (data.size() != that.data.size()) {
       return false;
     }
-    for (Entry<Key<?>, Object> e : data.entrySet()) {
+    for (Entry<Key<?, ? extends C>, Object> e : data.entrySet()) {
       if (!that.data.containsKey(e.getKey())) {
         return false;
       }
@@ -190,7 +194,7 @@ public final class Attributes {
   @Override
   public int hashCode() {
     int hashCode = 0;
-    for (Entry<Key<?>, Object> e : data.entrySet()) {
+    for (Entry<Key<?, ? extends C>, Object> e : data.entrySet()) {
       hashCode += Objects.hashCode(e.getKey(), e.getValue());
     }
     return hashCode;
@@ -199,28 +203,28 @@ public final class Attributes {
   /**
    * The helper class to build an Attributes instance.
    */
-  public static final class Builder {
-    private Attributes base;
-    private Map<Key<?>, Object> newdata;
+  public static final class Builder<C extends Category> {
+    private Attributes<C> base;
+    private Map<Key<?, ? extends C>, Object> newdata;
 
-    private Builder(Attributes base) {
+    private Builder(Attributes<C> base) {
       assert base != null;
       this.base = base;
     }
 
-    private Map<Key<?>, Object> data(int size) {
+    private Map<Key<?, ? extends C>, Object> data(int size) {
       if (newdata == null) {
-        newdata = new IdentityHashMap<Key<?>, Object>(size);
+        newdata = new IdentityHashMap<Key<?, ? extends C>, Object>(size);
       }
       return newdata;
     }
 
-    public <T> Builder set(Key<T> key, T value) {
+    public <T, C1 extends C> Builder<C> set(Key<T, C1> key, T value) {
       data(1).put(key, value);
       return this;
     }
 
-    public <T> Builder setAll(Attributes other) {
+    public <C1 extends C> Builder<C> setAll(Attributes<C1> other) {
       data(other.data.size()).putAll(other.data);
       return this;
     }
@@ -228,17 +232,22 @@ public final class Attributes {
     /**
      * Build the attributes.
      */
-    public Attributes build() {
+    public Attributes<C> build() {
       if (newdata != null) {
-        for (Entry<Key<?>, Object> entry : base.data.entrySet()) {
+        for (Entry<Key<?, ? extends C>, Object> entry : base.data.entrySet()) {
           if (!newdata.containsKey(entry.getKey())) {
             newdata.put(entry.getKey(), entry.getValue());
           }
         }
-        base = new Attributes(newdata);
+        base = new Attributes<C>(newdata);
         newdata = null;
       }
       return base;
     }
+  }
+
+  @SuppressWarnings("unchecked")
+  public static <C extends Category> Attributes<C> getEmpty(Class<C> cat) {
+    return (Attributes<C>) EMPTY;
   }
 }

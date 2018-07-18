@@ -448,11 +448,11 @@ final class ClientCallImpl<ReqT, RespT> extends ClientCall<ReqT, RespT> {
   }
 
   @Override
-  public Attributes getAttributes() {
+  public Attributes<ClientCallAttrs> getAttributes() {
     if (stream != null) {
       return stream.getAttributes();
     }
-    return Attributes.EMPTY;
+    return Attributes.getEmpty(ClientCallAttrs.class);
   }
 
   private void closeObserver(Listener<RespT> observer, Status status, Metadata trailers) {

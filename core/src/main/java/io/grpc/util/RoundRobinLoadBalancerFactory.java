@@ -100,10 +100,11 @@ public final class RoundRobinLoadBalancerFactory extends LoadBalancer.Factory {
   @VisibleForTesting
   static final class RoundRobinLoadBalancer extends LoadBalancer {
     @VisibleForTesting
-    static final Attributes.Key<Ref<ConnectivityStateInfo>> STATE_INFO =
-        Attributes.Key.create("state-info");
+    static final Attributes.Key<Ref<ConnectivityStateInfo>, SubchannelAttrs> STATE_INFO =
+        Attributes.Key.create("state-info", SubchannelAttrs.class);
     // package-private to avoid synthetic access
-    static final Attributes.Key<Ref<Subchannel>> STICKY_REF = Attributes.Key.create("sticky-ref");
+    static final Attributes.Key<Ref<Subchannel>, SubchannelAttrs> STICKY_REF =
+        Attributes.Key.create("sticky-ref", SubchannelAttrs);
 
     private static final Logger logger = Logger.getLogger(RoundRobinLoadBalancer.class.getName());
 

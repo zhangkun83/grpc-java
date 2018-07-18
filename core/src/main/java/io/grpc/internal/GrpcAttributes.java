@@ -17,6 +17,8 @@
 package io.grpc.internal;
 
 import io.grpc.Attributes;
+import io.grpc.NameResolver.NameResolverAttrs;
+import io.grpc.EquivalentAddressGroup.EagAttrs;
 import java.util.Map;
 
 /**
@@ -26,22 +28,22 @@ public final class GrpcAttributes {
   /**
    * Attribute key for service config.
    */
-  public static final Attributes.Key<Map<String, Object>> NAME_RESOLVER_SERVICE_CONFIG =
-      Attributes.Key.create("service-config");
+  public static final Attributes.Key<Map<String, Object>, NameResolverAttrs> NAME_RESOLVER_SERVICE_CONFIG =
+      Attributes.Key.create("service-config", NameResolverAttrs.class);
 
   /**
    * The naming authority of a gRPC LB server address.  It is an address-group-level attribute,
    * present when the address group is a LoadBalancer.
    */
-  public static final Attributes.Key<String> ATTR_LB_ADDR_AUTHORITY =
-      Attributes.Key.create("io.grpc.grpclb.lbAddrAuthority");
+  public static final Attributes.Key<String, EagAttrs> ATTR_LB_ADDR_AUTHORITY =
+      Attributes.Key.create("io.grpc.grpclb.lbAddrAuthority", EagAttrs.class);
 
   /**
    * Whether this EquivalentAddressGroup was provided by a GRPCLB server. It would be rare for this
    * value to be {@code false}; generally it would be better to not have the key present at all.
    */
-  public static final Attributes.Key<Boolean> ATTR_LB_PROVIDED_BACKEND =
-      Attributes.Key.create("io.grpc.grpclb.lbProvidedBackend");
+  public static final Attributes.Key<Boolean, EagAttrs> ATTR_LB_PROVIDED_BACKEND =
+      Attributes.Key.create("io.grpc.grpclb.lbProvidedBackend", EagAttrs.class);
 
   private GrpcAttributes() {}
 }

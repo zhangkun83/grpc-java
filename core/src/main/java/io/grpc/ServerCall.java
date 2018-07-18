@@ -188,6 +188,9 @@ public abstract class ServerCall<ReqT, RespT> {
     // noop
   }
 
+  public interface ServerCallAttrs extends Grpc.TransportAttrs {
+  }
+
   /**
    * Returns properties of a single call.
    *
@@ -197,8 +200,8 @@ public abstract class ServerCall<ReqT, RespT> {
    * @return non-{@code null} Attributes container
    */
   @ExperimentalApi("https://github.com/grpc/grpc-java/issues/1779")
-  public Attributes getAttributes() {
-    return Attributes.EMPTY;
+  public Attributes<ServerCallAttrs> getAttributes() {
+    return Attributes.getEmpty(ServerCallAttrs.class);
   }
 
   /**

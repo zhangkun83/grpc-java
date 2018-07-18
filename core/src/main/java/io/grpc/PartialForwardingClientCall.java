@@ -55,7 +55,7 @@ abstract class PartialForwardingClientCall<ReqT, RespT> extends ClientCall<ReqT,
   }
 
   @Override
-  public Attributes getAttributes() {
+  public Attributes<ClientCallAttrs> getAttributes() {
     return delegate().getAttributes();
   }
 

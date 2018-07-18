@@ -96,5 +96,5 @@ public interface ClientStream extends Stream {
   /**
    * Attributes that the stream holds at the current moment.
    */
-  Attributes getAttributes();
+  Attributes<io.grpc.Grpc.TransportAttrs> getAttributes();
 }

@@ -27,17 +27,20 @@ public final class Grpc {
   private Grpc() {
   }
 
+  public interface TransportAttrs extends Category {
+  }
+
   /**
    * Attribute key for the remote address of a transport.
    */
   @ExperimentalApi("https://github.com/grpc/grpc-java/issues/1710")
-  public static final Attributes.Key<SocketAddress> TRANSPORT_ATTR_REMOTE_ADDR =
-          Attributes.Key.create("remote-addr");
+  public static final Attributes.Key<SocketAddress, TransportAttrs> TRANSPORT_ATTR_REMOTE_ADDR =
+      Attributes.Key.create("remote-addr", TransportAttrs.class);
 
   /**
    * Attribute key for SSL session of a transport.
    */
   @ExperimentalApi("https://github.com/grpc/grpc-java/issues/1710")
-  public static final Attributes.Key<SSLSession> TRANSPORT_ATTR_SSL_SESSION =
-          Attributes.Key.create("ssl-session");
+  public static final Attributes.Key<SSLSession, TransportAttrs> TRANSPORT_ATTR_SSL_SESSION =
+      Attributes.Key.create("ssl-session", TransportAttrs.class);
 }

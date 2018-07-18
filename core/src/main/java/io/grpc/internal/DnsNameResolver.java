@@ -115,7 +115,7 @@ final class DnsNameResolver extends NameResolver {
   @GuardedBy("this")
   private Listener listener;
 
-  DnsNameResolver(@Nullable String nsAuthority, String name, Attributes params,
+  DnsNameResolver(@Nullable String nsAuthority, String name, Attributes<NameResolverParams> params,
       Resource<ExecutorService> executorResource,
       ProxyDetector proxyDetector) {
     // TODO: if a DNS server is provided as nsAuthority, use it.
@@ -190,7 +190,8 @@ final class DnsNameResolver extends NameResolver {
                             .newBuilder()
                             .set(ProxyDetector.PROXY_PARAMS_KEY, proxy)
                             .build()));
-            savedListener.onAddresses(Collections.singletonList(server), Attributes.EMPTY);
+            savedListener.onAddresses(
+                Collections.singletonList(server), Attributes.getEmpty(NameResolverAttrs.class));
             return;
           }
 
@@ -213,7 +214,7 @@ final class DnsNameResolver extends NameResolver {
           }
           servers.addAll(resolutionResults.balancerAddresses);
 
-          Attributes.Builder attrs = Attributes.newBuilder();
+          Attributes.Builder<NameResolverAttrs> attrs = Attributes.newBuilder();
           if (!resolutionResults.txtRecords.isEmpty()) {
             Map<String, Object> serviceConfig = null;
             try {

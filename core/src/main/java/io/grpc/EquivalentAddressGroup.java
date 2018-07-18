@@ -33,7 +33,10 @@ import java.util.List;
 public final class EquivalentAddressGroup {
 
   private final List<SocketAddress> addrs;
-  private final Attributes attrs;
+  private final Attributes<EagAttrs> attrs;
+
+  public interface EagAttrs extends io.grpc.Category {
+  }
 
   /**
    * {@link SocketAddress} docs say that the addresses are immutable, so we cache the hashCode.
@@ -44,13 +47,13 @@ public final class EquivalentAddressGroup {
    * List constructor without {@link Attributes}.
    */
   public EquivalentAddressGroup(List<SocketAddress> addrs) {
-    this(addrs, Attributes.EMPTY);
+    this(addrs, Attributes.getEmpty(EagAttrs.class));
   }
 
   /**
    * List constructor with {@link Attributes}.
    */
-  public EquivalentAddressGroup(List<SocketAddress> addrs, Attributes attrs) {
+  public EquivalentAddressGroup(List<SocketAddress> addrs, Attributes<EagAttrs> attrs) {
     Preconditions.checkArgument(!addrs.isEmpty(), "addrs is empty");
     this.addrs = Collections.unmodifiableList(new ArrayList<SocketAddress>(addrs));
     this.attrs = Preconditions.checkNotNull(attrs, "attrs");
@@ -63,13 +66,13 @@ public final class EquivalentAddressGroup {
    * Singleton constructor without Attributes.
    */
   public EquivalentAddressGroup(SocketAddress addr) {
-    this(addr, Attributes.EMPTY);
+    this(addr, Attributes.getEmpty(EagAttrs.class));
   }
 
   /**
    * Singleton constructor with Attributes.
    */
-  public EquivalentAddressGroup(SocketAddress addr, Attributes attrs) {
+  public EquivalentAddressGroup(SocketAddress addr, Attributes<EagAttrs> attrs) {
     this(Collections.singletonList(addr), attrs);
   }
 
@@ -83,7 +86,7 @@ public final class EquivalentAddressGroup {
   /**
    * Returns the attributes.
    */
-  public Attributes getAttributes() {
+  public Attributes<EagAttrs> getAttributes() {
     return attrs;
   }
 

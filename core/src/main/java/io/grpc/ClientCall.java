@@ -257,6 +257,9 @@ public abstract class ClientCall<ReqT, RespT> {
     // noop
   }
 
+  public interface ClientCallAttrs extends Grpc.TransportAttrs {
+  }
+
   /**
    * Returns additional properties of the call. May only be called after {@link Listener#onHeaders}
    * or {@link Listener#onClose}. If called prematurely, the implementation may throw {@code
@@ -268,7 +271,7 @@ public abstract class ClientCall<ReqT, RespT> {
    * @throws IllegalStateException (optional) if called before permitted
    */
   @ExperimentalApi("https://github.com/grpc/grpc-java/issues/2607")
-  public Attributes getAttributes() {
-    return Attributes.EMPTY;
+  public Attributes<ClientCallAttrs> getAttributes() {
+    return Attributes.getEmpty(ClientCallAttrs.class);
   }
 }

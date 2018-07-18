@@ -16,6 +16,8 @@
 
 package io.grpc;
 
+import io.grpc.Grpc.TransportAttrs;
+
 /**
  * Listens on server transport life-cycle events, with the capability to read and/or change
  * transport attributes.  Attributes returned by this filter will be merged into {@link
@@ -42,7 +44,7 @@ public abstract class ServerTransportFilter {
    * @return new transport attributes. Default implementation returns the passed-in attributes
    *         intact.
    */
-  public Attributes transportReady(Attributes transportAttrs) {
+  public Attributes<TransportAttrs> transportReady(Attributes<TransportAttrs> transportAttrs) {
     return transportAttrs;
   }
 
@@ -52,6 +54,6 @@ public abstract class ServerTransportFilter {
    * @param transportAttrs the effective transport attributes, which is what returned by {@link
    * #transportReady} of the last executed filter.
    */
-  public void transportTerminated(Attributes transportAttrs) {
+  public void transportTerminated(Attributes<TransportAttrs> transportAttrs) {
   }
 }
