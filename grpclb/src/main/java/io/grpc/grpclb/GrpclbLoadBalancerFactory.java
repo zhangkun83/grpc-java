@@ -16,12 +16,19 @@
 
 package io.grpc.grpclb;
 
+import static com.google.common.base.Preconditions.checkNotNull;
+
 import io.grpc.ExperimentalApi;
 import io.grpc.LoadBalancer;
 import io.grpc.internal.ExponentialBackoffPolicy;
 import io.grpc.internal.GrpcUtil;
+import io.grpc.internal.AbstractManagedControlPlaneScheduler;
+import io.grpc.internal.ObjectPool;
 import io.grpc.internal.SharedResourcePool;
 import io.grpc.internal.TimeProvider;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * A factory for {@link LoadBalancer}s that uses the GRPCLB protocol.
@@ -33,6 +40,8 @@ import io.grpc.internal.TimeProvider;
 public class GrpclbLoadBalancerFactory extends LoadBalancer.Factory {
 
   private static final GrpclbLoadBalancerFactory INSTANCE = new GrpclbLoadBalancerFactory();
+  private static final ObjectPool<ScheduledExecutorService> timerServicePool =
+      SharedResourcePool.forResource(GrpcUtil.TIMER_SERVICE);
 
   private GrpclbLoadBalancerFactory() {
   }
@@ -45,12 +54,25 @@ public class GrpclbLoadBalancerFactory extends LoadBalancer.Factory {
   public LoadBalancer newLoadBalancer(LoadBalancer.Helper helper) {
     return new GrpclbLoadBalancer(
         helper, new CachedSubchannelPool(),
-        // TODO(zhangkun83): balancer sends load reporting RPCs from it, which also involves
-        // channelExecutor thus may also run other tasks queued in the channelExecutor.  If such
-        // load should not be on the shared scheduled executor, we should use a combination of the
-        // scheduled executor and the default app executor.
-        SharedResourcePool.forResource(GrpcUtil.TIMER_SERVICE),
-        TimeProvider.SYSTEM_TIME_PROVIDER,
+        new ControlPlaneSchedulerImpl(helper),
         new ExponentialBackoffPolicy.Provider());
+  }
+
+  // TODO(zhangkun83): balancer sends load reporting RPCs from it, which also involves
+  // channelExecutor thus may also run other tasks queued in the channelExecutor.  If such
+  // load should not be on the shared scheduled executor, we should use a combination of the
+  // scheduled executor and the default app executor.
+  private static class ControlPlaneSchedulerImpl extends AbstractManagedControlPlaneScheduler {
+    final LoadBalancer.Helper helper;
+
+    ControlPlaneSchedulerImpl(LoadBalancer.Helper helper) {
+      super(timerServicePool);
+      this.helper = checkNotNull(helper, "helper");
+    }
+
+    @Override
+    protected void runInSynchronizationContext(Runnable task) {
+      helper.runSerialized(task);
+    }
   }
 }

@@ -42,7 +42,10 @@ import io.grpc.LoadBalancer.SubchannelPicker;
 import io.grpc.ManagedChannel;
 import io.grpc.Metadata;
 import io.grpc.Status;
+import io.grpc.internal.BackedOffExecutor;
 import io.grpc.internal.BackoffPolicy;
+import io.grpc.internal.ControlPlaneScheduler;
+import io.grpc.internal.ControlPlaneScheduler.ScheduledContext;
 import io.grpc.internal.GrpcAttributes;
 import io.grpc.internal.TimeProvider;
 import io.grpc.lb.v1.ClientStats;
@@ -66,6 +69,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -109,26 +113,20 @@ final class GrpclbState {
   private final String serviceName;
   private final Helper helper;
   private final SubchannelPool subchannelPool;
-  private final TimeProvider time;
-  private final ScheduledExecutorService timerService;
+  private final ControlPlaneScheduler scheduler;
+  private final BackedOffExecutor lbRpcStarter;
 
   private static final Attributes.Key<AtomicReference<ConnectivityStateInfo>> STATE_INFO =
       Attributes.Key.create("io.grpc.grpclb.GrpclbLoadBalancer.stateInfo");
-  private final BackoffPolicy.Provider backoffPolicyProvider;
 
   // Scheduled only once.  Never reset.
   @Nullable
-  private FallbackModeTask fallbackTimer;
+  private ScheduledContext fallbackTimer;
   private List<EquivalentAddressGroup> fallbackBackendList = Collections.emptyList();
   private boolean usingFallbackBackends;
   // True if the current balancer has returned a serverlist.  Will be reset to false when lost
   // connection to a balancer.
   private boolean balancerWorking;
-  @Nullable
-  private BackoffPolicy lbRpcRetryPolicy;
-  @Nullable
-  private LbRpcRetryTask lbRpcRetryTimer;
-  private long prevLbRpcStartNanos;
 
   @Nullable
   private ManagedChannel lbCommChannel;
@@ -147,19 +145,17 @@ final class GrpclbState {
       new RoundRobinPicker(Collections.<DropEntry>emptyList(), Arrays.asList(BUFFER_ENTRY));
 
   GrpclbState(
-      Helper helper,
+      final Helper helper,
       SubchannelPool subchannelPool,
-      TimeProvider time,
-      ScheduledExecutorService timerService,
+      ControlPlaneScheduler scheduler,
       BackoffPolicy.Provider backoffPolicyProvider,
       InternalLogId logId) {
     this.helper = checkNotNull(helper, "helper");
     this.subchannelPool = checkNotNull(subchannelPool, "subchannelPool");
-    this.time = checkNotNull(time, "time provider");
-    this.timerService = checkNotNull(timerService, "timerService");
-    this.backoffPolicyProvider = checkNotNull(backoffPolicyProvider, "backoffPolicyProvider");
+    this.scheduler = checkNotNull(scheduler, scheduler);
     this.serviceName = checkNotNull(helper.getAuthority(), "helper returns null authority");
     this.logId = checkNotNull(logId, "logId");
+    this.lbRpcStarter = new BackedOffExecutor(scheduler, backoffPolicyProvider);
   }
 
   void handleSubchannelState(Subchannel subchannel, ConnectivityStateInfo newState) {
@@ -191,15 +187,27 @@ final class GrpclbState {
     // stampeding herd. The current RPC may be on a connection to an address not present in
     // newLbAddressGroups, but we're considering that "okay". If we detected the RPC is to an
     // outdated backend, we could choose to re-create the RPC.
-    if (lbStream == null) {
-      startLbRpc();
+    if (!lbRpcStarter.isInitialRunScheduled()) {
+      lbRpcStarter.initialRun(startLbRpcTask);
     }
     fallbackBackendList = newBackendServers;
     // Start the fallback timer if it's never started
     if (fallbackTimer == null) {
       logger.log(Level.FINE, "[{0}] Starting fallback timer.", new Object[] {logId});
-      fallbackTimer = new FallbackModeTask();
-      fallbackTimer.schedule();
+      fallbackTimer = scheduler.schedule(
+          new Runnable() {
+            @Override
+            public void run() {
+              maybeUseFallbackBackends();
+              maybeUpdatePicker();
+            }
+
+            @Override
+            public String toString() {
+              return "GrpclbState.fallbackTimer";
+            }
+          },
+          FALLBACK_TIMEOUT_MS, TimeUnit.MILLISECONDS);
     }
     if (usingFallbackBackends) {
       // Populate the new fallback backends to round-robin list.
@@ -215,7 +223,7 @@ final class GrpclbState {
     if (usingFallbackBackends) {
       return;
     }
-    if (fallbackTimer != null && !fallbackTimer.discarded) {
+    if (fallbackTimer != null && fallbackTimer.isPending()) {
       return;
     }
     int numReadySubchannels = 0;
@@ -277,33 +285,9 @@ final class GrpclbState {
     }
   }
 
-  private void startLbRpc() {
-    checkState(lbStream == null, "previous lbStream has not been cleared yet");
-    LoadBalancerGrpc.LoadBalancerStub stub = LoadBalancerGrpc.newStub(lbCommChannel);
-    lbStream = new LbStream(stub);
-    lbStream.start();
-    prevLbRpcStartNanos = time.currentTimeNanos();
-
-    LoadBalanceRequest initRequest = LoadBalanceRequest.newBuilder()
-        .setInitialRequest(InitialLoadBalanceRequest.newBuilder()
-            .setName(serviceName).build())
-        .build();
-    try {
-      lbStream.lbRequestWriter.onNext(initRequest);
-    } catch (Exception e) {
-      lbStream.close(e);
-    }
-  }
-
   private void cancelFallbackTimer() {
     if (fallbackTimer != null) {
       fallbackTimer.cancel();
-    }
-  }
-
-  private void cancelLbRpcRetryTimer() {
-    if (lbRpcRetryTimer != null) {
-      lbRpcRetryTimer.cancel();
     }
   }
 
@@ -317,7 +301,7 @@ final class GrpclbState {
     subchannels = Collections.emptyMap();
     subchannelPool.clear();
     cancelFallbackTimer();
-    cancelLbRpcRetryTimer();
+    lbRpcStarter.reset();
   }
 
   void propagateError(Status status) {
@@ -389,80 +373,30 @@ final class GrpclbState {
     backendList = Collections.unmodifiableList(newBackendList);
   }
 
-  @VisibleForTesting
-  class FallbackModeTask implements Runnable {
-    private ScheduledFuture<?> scheduledFuture;
-    private boolean discarded;
+  private final Runnable startLbRpcTask = new Runnable() {
+      @Override
+      public void run() {
+        checkState(lbStream == null, "previous lbStream has not been cleared yet");
+        LoadBalancerGrpc.LoadBalancerStub stub = LoadBalancerGrpc.newStub(lbCommChannel);
+        lbStream = new LbStream(stub);
+        lbStream.start();
 
-    @Override
-    public void run() {
-      helper.runSerialized(new Runnable() {
-          @Override
-          public void run() {
-            checkState(fallbackTimer == FallbackModeTask.this, "fallback timer mismatch");
-            discarded = true;
-            maybeUseFallbackBackends();
-            maybeUpdatePicker();
-          }
-        });
-    }
+        LoadBalanceRequest initRequest = LoadBalanceRequest.newBuilder()
+            .setInitialRequest(InitialLoadBalanceRequest.newBuilder()
+                .setName(serviceName).build())
+            .build();
+        try {
+          lbStream.lbRequestWriter.onNext(initRequest);
+        } catch (Exception e) {
+          lbStream.close(e);
+        }
+      }
 
-    void cancel() {
-      discarded = true;
-      scheduledFuture.cancel(false);
-    }
-
-    void schedule() {
-      checkState(scheduledFuture == null, "FallbackModeTask already scheduled");
-      scheduledFuture = timerService.schedule(this, FALLBACK_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-    }
-  }
-
-  @VisibleForTesting
-  class LbRpcRetryTask implements Runnable {
-    private ScheduledFuture<?> scheduledFuture;
-
-    @Override
-    public void run() {
-      helper.runSerialized(new Runnable() {
-          @Override
-          public void run() {
-            checkState(
-                lbRpcRetryTimer == LbRpcRetryTask.this, "LbRpc retry timer mismatch");
-            startLbRpc();
-          }
-        });
-    }
-
-    void cancel() {
-      scheduledFuture.cancel(false);
-    }
-
-    void schedule(long delayNanos) {
-      checkState(scheduledFuture == null, "LbRpcRetryTask already scheduled");
-      scheduledFuture = timerService.schedule(this, delayNanos, TimeUnit.NANOSECONDS);
-    }
-  }
-
-  @VisibleForTesting
-  class LoadReportingTask implements Runnable {
-    private final LbStream stream;
-
-    LoadReportingTask(LbStream stream) {
-      this.stream = stream;
-    }
-
-    @Override
-    public void run() {
-      helper.runSerialized(new Runnable() {
-          @Override
-          public void run() {
-            stream.loadReportFuture = null;
-            stream.sendLoadReport();
-          }
-        });
-    }
-  }
+      @Override
+      public String toString() {
+        return "GrpclbState.startLbRpcTask";
+      }
+    };
 
   private class LbStream implements StreamObserver<LoadBalanceResponse> {
     final GrpclbClientLoadRecorder loadRecorder;
@@ -473,13 +407,13 @@ final class GrpclbState {
     boolean initialResponseReceived;
     boolean closed;
     long loadReportIntervalMillis = -1;
-    ScheduledFuture<?> loadReportFuture;
+    ScheduledContext loadReportTimer;
 
     LbStream(LoadBalancerGrpc.LoadBalancerStub stub) {
       this.stub = checkNotNull(stub, "stub");
       // Stats data only valid for current LbStream.  We do not carry over data from previous
       // stream.
-      loadRecorder = new GrpclbClientLoadRecorder(time);
+      loadRecorder = new GrpclbClientLoadRecorder(scheduler);
     }
 
     void start() {
@@ -533,8 +467,20 @@ final class GrpclbState {
 
     private void scheduleNextLoadReport() {
       if (loadReportIntervalMillis > 0) {
-        loadReportFuture = timerService.schedule(
-            new LoadReportingTask(this), loadReportIntervalMillis, TimeUnit.MILLISECONDS);
+        loadReportTimer = scheduler.schedule(
+            new Runnable() {
+              @Override
+              public void run() {
+                loadReportTimer = null;
+                sendLoadReport();
+              }
+
+              @Override
+              public String toString() {
+                return "GrpclbState.loadReportTimer";
+              }
+            },
+            loadReportIntervalMillis, TimeUnit.MILLISECONDS);
       }
     }
 
@@ -618,25 +564,12 @@ final class GrpclbState {
       maybeUseFallbackBackends();
       maybeUpdatePicker();
 
-      long delayNanos = 0;
-      if (initialResponseReceived || lbRpcRetryPolicy == null) {
-        // Reset the backoff sequence if balancer has sent the initial response, or backoff sequence
-        // has never been initialized.
-        lbRpcRetryPolicy = backoffPolicyProvider.get();
-      }
       // Backoff only when balancer wasn't working previously.
-      if (!initialResponseReceived) {
-        // The back-off policy determines the interval between consecutive RPC upstarts, thus the
-        // actual delay may be smaller than the value from the back-off policy, or even negative,
-        // depending how much time was spent in the previous RPC.
-        delayNanos =
-            prevLbRpcStartNanos + lbRpcRetryPolicy.nextBackoffNanos() - time.currentTimeNanos();
-      }
-      if (delayNanos <= 0) {
-        startLbRpc();
+      if (initialResponseReceived) {
+        lbRpcStarter.reset();
+        lbRpcStarter.initialRun(startLbRpcTask);
       } else {
-        lbRpcRetryTimer = new LbRpcRetryTask();
-        lbRpcRetryTimer.schedule(delayNanos);
+        lbRpcStarter.subsequentRun(startLbRpcTask);
       }
     }
 
@@ -658,9 +591,9 @@ final class GrpclbState {
     }
 
     private void cleanUp() {
-      if (loadReportFuture != null) {
-        loadReportFuture.cancel(false);
-        loadReportFuture = null;
+      if (loadReportTimer != null) {
+        loadReportTimer.cancel();
+        loadReportTimer = null;
       }
       if (lbStream == this) {
         lbStream = null;

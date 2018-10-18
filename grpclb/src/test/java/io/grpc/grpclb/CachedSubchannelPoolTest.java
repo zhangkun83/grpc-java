@@ -35,8 +35,6 @@ import io.grpc.Attributes;
 import io.grpc.EquivalentAddressGroup;
 import io.grpc.LoadBalancer.Helper;
 import io.grpc.LoadBalancer.Subchannel;
-import io.grpc.grpclb.CachedSubchannelPool.ShutdownSubchannelScheduledTask;
-import io.grpc.grpclb.CachedSubchannelPool.ShutdownSubchannelTask;
 import io.grpc.internal.FakeClock;
 import io.grpc.internal.SerializingExecutor;
 import java.util.ArrayList;
@@ -64,12 +62,10 @@ public class CachedSubchannelPoolTest {
       new FakeClock.TaskFilter() {
         @Override
         public boolean shouldAccept(Runnable command) {
-          return command instanceof ShutdownSubchannelScheduledTask;
+          return command.toString().contains("ShutdownSubchannelTask");
         }
       };
 
-  private final SerializingExecutor channelExecutor =
-      new SerializingExecutor(MoreExecutors.directExecutor());
   private final Helper helper = mock(Helper.class);
   private final FakeClock clock = new FakeClock();
   private final CachedSubchannelPool pool = new CachedSubchannelPool();
@@ -91,15 +87,7 @@ public class CachedSubchannelPoolTest {
           return subchannel;
         }
       }).when(helper).createSubchannel(any(List.class), any(Attributes.class));
-    doAnswer(new Answer<Void>() {
-        @Override
-        public Void answer(InvocationOnMock invocation) throws Throwable {
-          Runnable task = (Runnable) invocation.getArguments()[0];
-          channelExecutor.execute(task);
-          return null;
-        }
-      }).when(helper).runSerialized(any(Runnable.class));
-    pool.init(helper, clock.getScheduledExecutorService());
+    pool.init(helper, clock.newControlPlaneScheduler());
   }
 
   @After
@@ -108,6 +96,7 @@ public class CachedSubchannelPoolTest {
     for (Subchannel subchannel : mockSubchannels) {
       verify(subchannel, atMost(1)).shutdown();
     }
+    verify(helper, never()).runSerialized(any(Runnable.class));
   }
 
   @Test
@@ -138,7 +127,6 @@ public class CachedSubchannelPoolTest {
     verify(subchannel2).shutdown();
 
     assertThat(clock.numPendingTasks()).isEqualTo(0);
-    verify(helper, times(2)).runSerialized(any(ShutdownSubchannelTask.class));
   }
 
   @Test
@@ -182,7 +170,6 @@ public class CachedSubchannelPoolTest {
     verify(subchannel1a).shutdown();
 
     assertThat(clock.numPendingTasks()).isEqualTo(0);
-    verify(helper, times(2)).runSerialized(any(ShutdownSubchannelTask.class));
   }
 
   @Test
@@ -211,7 +198,6 @@ public class CachedSubchannelPoolTest {
 
     verify(subchannel2, never()).shutdown();
     verify(subchannel3, never()).shutdown();
-    verify(helper, never()).runSerialized(any(ShutdownSubchannelTask.class));
   }
 
   @Test
@@ -231,6 +217,5 @@ public class CachedSubchannelPoolTest {
 
     verify(subchannel3, never()).shutdown();
     assertThat(clock.numPendingTasks()).isEqualTo(0);
-    verify(helper, never()).runSerialized(any(ShutdownSubchannelTask.class));
   }
 }

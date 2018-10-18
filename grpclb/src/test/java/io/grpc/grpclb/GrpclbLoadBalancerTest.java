@@ -70,6 +70,7 @@ import io.grpc.inprocess.InProcessChannelBuilder;
 import io.grpc.inprocess.InProcessServerBuilder;
 import io.grpc.internal.BackoffPolicy;
 import io.grpc.internal.FakeClock;
+import io.grpc.internal.FakeClock.FakeControlPlaneScheduler;
 import io.grpc.internal.GrpcAttributes;
 import io.grpc.internal.ObjectPool;
 import io.grpc.internal.SerializingExecutor;
@@ -117,21 +118,21 @@ public class GrpclbLoadBalancerTest {
       new FakeClock.TaskFilter() {
         @Override
         public boolean shouldAccept(Runnable command) {
-          return command instanceof GrpclbState.LoadReportingTask;
+          return command.toString().contains("GrpclbState.loadReportTimer");
         }
       };
   private static final FakeClock.TaskFilter FALLBACK_MODE_TASK_FILTER =
       new FakeClock.TaskFilter() {
         @Override
         public boolean shouldAccept(Runnable command) {
-          return command instanceof GrpclbState.FallbackModeTask;
+          return command.toString().contains("GrpclbState.fallbackTimer");
         }
       };
   private static final FakeClock.TaskFilter LB_RPC_RETRY_TASK_FILTER =
       new FakeClock.TaskFilter() {
         @Override
         public boolean shouldAccept(Runnable command) {
-          return command instanceof GrpclbState.LbRpcRetryTask;
+          return command.toString().contains("GrpclbState.startLbRpcTask");
         }
       };
   private static final Attributes LB_BACKEND_ATTRS =
@@ -146,6 +147,7 @@ public class GrpclbLoadBalancerTest {
   @Captor
   private ArgumentCaptor<StreamObserver<LoadBalanceResponse>> lbResponseObserverCaptor;
   private final FakeClock fakeClock = new FakeClock();
+  private final FakeControlPlaneScheduler scheduler = fakeClock.newControlPlaneScheduler();
   private final LinkedList<StreamObserver<LoadBalanceRequest>> lbRequestObservers =
       new LinkedList<StreamObserver<LoadBalanceRequest>>();
   private final LinkedList<Subchannel> mockSubchannels = new LinkedList<Subchannel>();
@@ -153,19 +155,11 @@ public class GrpclbLoadBalancerTest {
   private final ArrayList<Subchannel> subchannelTracker = new ArrayList<>();
   private final ArrayList<ManagedChannel> oobChannelTracker = new ArrayList<>();
   private final ArrayList<String> failingLbAuthorities = new ArrayList<>();
-  private final TimeProvider timeProvider = new TimeProvider() {
-      @Override
-      public long currentTimeNanos() {
-        return fakeClock.getTicker().read();
-      }
-    };
   private io.grpc.Server fakeLbServer;
   @Captor
   private ArgumentCaptor<SubchannelPicker> pickerCaptor;
   private final SerializingExecutor channelExecutor =
       new SerializingExecutor(MoreExecutors.directExecutor());
-  @Mock
-  private ObjectPool<ScheduledExecutorService> timerServicePool;
   @Mock
   private BackoffPolicy.Provider backoffPolicyProvider;
   @Mock
@@ -247,18 +241,15 @@ public class GrpclbLoadBalancerTest {
       }).when(helper).updateBalancingState(
           any(ConnectivityState.class), any(SubchannelPicker.class));
     when(helper.getAuthority()).thenReturn(SERVICE_AUTHORITY);
-    ScheduledExecutorService timerService = fakeClock.getScheduledExecutorService();
-    when(timerServicePool.getObject()).thenReturn(timerService);
     when(backoffPolicy1.nextBackoffNanos()).thenReturn(10L, 100L);
     when(backoffPolicy2.nextBackoffNanos()).thenReturn(10L, 100L);
     when(backoffPolicyProvider.get()).thenReturn(backoffPolicy1, backoffPolicy2);
     balancer = new GrpclbLoadBalancer(
         helper,
         subchannelPool,
-        timerServicePool,
-        timeProvider,
+        scheduler,
         backoffPolicyProvider);
-    verify(subchannelPool).init(same(helper), same(timerService));
+    verify(subchannelPool).init(same(helper), same(scheduler));
   }
 
   @After
@@ -298,7 +289,7 @@ public class GrpclbLoadBalancerTest {
 
   @Test
   public void roundRobinPickerNoDrop() {
-    GrpclbClientLoadRecorder loadRecorder = new GrpclbClientLoadRecorder(timeProvider);
+    GrpclbClientLoadRecorder loadRecorder = new GrpclbClientLoadRecorder(scheduler);
     Subchannel subchannel = mock(Subchannel.class);
     BackendEntry b1 = new BackendEntry(subchannel, loadRecorder, "LBTOKEN0001");
     BackendEntry b2 = new BackendEntry(subchannel, loadRecorder, "LBTOKEN0002");
@@ -336,7 +327,7 @@ public class GrpclbLoadBalancerTest {
   @Test
   public void roundRobinPickerWithDrop() {
     assertTrue(DROP_PICK_RESULT.isDrop());
-    GrpclbClientLoadRecorder loadRecorder = new GrpclbClientLoadRecorder(timeProvider);
+    GrpclbClientLoadRecorder loadRecorder = new GrpclbClientLoadRecorder(scheduler);
     Subchannel subchannel = mock(Subchannel.class);
     // 1 out of 2 requests are to be dropped
     DropEntry d = new DropEntry(loadRecorder, "LBTOKEN0003");
@@ -706,13 +697,11 @@ public class GrpclbLoadBalancerTest {
   }
 
   @Test
-  public void acquireAndReleaseScheduledExecutor() {
-    verify(timerServicePool).getObject();
-    verifyNoMoreInteractions(timerServicePool);
+  public void shutdownScheduler() {
+    assertFalse(scheduler.isShutdown());
 
     balancer.shutdown();
-    verify(timerServicePool).returnObject(same(fakeClock.getScheduledExecutorService()));
-    verifyNoMoreInteractions(timerServicePool);
+    assertTrue(scheduler.isShutdown());
   }
 
   @Test

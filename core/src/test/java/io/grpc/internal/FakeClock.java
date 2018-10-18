@@ -16,6 +16,8 @@
 
 package io.grpc.internal;
 
+import static com.google.common.base.Preconditions.checkState;
+
 import com.google.common.base.Stopwatch;
 import com.google.common.base.Supplier;
 import com.google.common.base.Ticker;
@@ -66,6 +68,42 @@ public final class FakeClock {
           return Stopwatch.createUnstarted(ticker);
         }
       };
+
+  public final class FakeControlPlaneScheduler extends ManagedControlPlaneScheduler {
+    private boolean isShutdown;
+
+    @Override
+    public ScheduledContext schedule(final Runnable task, long delay, TimeUnit unit) {
+      checkState(!isShutdown, "already shutdown");
+      final ScheduledTask future =
+          (ScheduledTask) scheduledExecutorService.schedule(task, delay, unit);
+      return new ScheduledContext() {
+        @Override
+        public void cancel() {
+          future.cancel(false);
+        }
+
+        @Override
+        public boolean isPending() {
+          return !(future.isDone() || future.isCancelled());
+        }
+      };
+    }
+
+    @Override
+    public long currentTimeNanos() {
+      return currentTimeNanos;
+    }
+
+    @Override
+    public void shutdown() {
+      isShutdown = true;
+    }
+
+    public boolean isShutdown() {
+      return isShutdown;
+    }
+  };
 
   private long currentTimeNanos;
 
@@ -195,6 +233,13 @@ public final class FakeClock {
   }
 
   /**
+   * Creates a {@link ControlPlaneScheduler} that is backed by this fake clock.
+   */
+  public FakeControlPlaneScheduler newControlPlaneScheduler() {
+    return new FakeControlPlaneScheduler();
+  }
+
+  /**
    * Provides a stopwatch instance that uses the fake clock ticker.
    */
   public Supplier<Stopwatch> getStopwatchSupplier() {
@@ -209,7 +254,7 @@ public final class FakeClock {
   }
 
   /**
-   * Run all due tasks.
+   * Run all due tasks. Immediately due tasks that are queued during the process also get executed.
    *
    * @return the number of tasks run by this call
    */
