@@ -19,7 +19,9 @@ package io.grpc.grpclb;
 import static com.google.common.base.Preconditions.checkNotNull;
 
 import com.google.protobuf.util.Timestamps;
+import io.grpc.Attributes;
 import io.grpc.ClientStreamTracer;
+import io.grpc.Grpc;
 import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.internal.TimeProvider;
@@ -34,22 +36,30 @@ import javax.annotation.concurrent.GuardedBy;
 import javax.annotation.concurrent.ThreadSafe;
 
 /**
- * Record and aggregate client-side load data for GRPCLB.  This records load occurred during the
- * span of an LB stream with the remote load-balancer.
+ * Stream tracer added by GRPCLB.
+ *
+ * <p>It attaches tokens to the headers if they are available from the EAG attributes.
+ *
+ * <p>It records and aggregates client-side load data for GRPCLB.  This records load occurred during
+ * the span of an LB stream with the remote load-balancer.
  */
 @ThreadSafe
-final class GrpclbClientLoadRecorder extends ClientStreamTracer.Factory {
+final class GrpclbClientStreamTracerFactory extends ClientStreamTracer.Factory {
+  static final ClientStreamTracer NOOP_TRACER = new ClientStreamTracer() {};
 
-  private static final AtomicLongFieldUpdater<GrpclbClientLoadRecorder> callsStartedUpdater =
-      AtomicLongFieldUpdater.newUpdater(GrpclbClientLoadRecorder.class, "callsStarted");
-  private static final AtomicLongFieldUpdater<GrpclbClientLoadRecorder> callsFinishedUpdater =
-      AtomicLongFieldUpdater.newUpdater(GrpclbClientLoadRecorder.class, "callsFinished");
-  private static final AtomicLongFieldUpdater<GrpclbClientLoadRecorder> callsFailedToSendUpdater =
-      AtomicLongFieldUpdater.newUpdater(GrpclbClientLoadRecorder.class, "callsFailedToSend");
-  private static final AtomicLongFieldUpdater<GrpclbClientLoadRecorder>
+  private static final AtomicLongFieldUpdater<GrpclbClientStreamTracerFactory> callsStartedUpdater =
+      AtomicLongFieldUpdater.newUpdater(GrpclbClientStreamTracerFactory.class, "callsStarted");
+  private static final AtomicLongFieldUpdater<GrpclbClientStreamTracerFactory>
+      callsFinishedUpdater =
+          AtomicLongFieldUpdater.newUpdater(GrpclbClientStreamTracerFactory.class, "callsFinished");
+  private static final AtomicLongFieldUpdater<GrpclbClientStreamTracerFactory>
+      callsFailedToSendUpdater =
+          AtomicLongFieldUpdater.newUpdater(
+              GrpclbClientStreamTracerFactory.class, "callsFailedToSend");
+  private static final AtomicLongFieldUpdater<GrpclbClientStreamTracerFactory>
       callsFinishedKnownReceivedUpdater =
           AtomicLongFieldUpdater.newUpdater(
-              GrpclbClientLoadRecorder.class, "callsFinishedKnownReceived");
+              GrpclbClientStreamTracerFactory.class, "callsFinishedKnownReceived");
 
   private final TimeProvider time;
   @SuppressWarnings("unused")
@@ -69,15 +79,26 @@ final class GrpclbClientLoadRecorder extends ClientStreamTracer.Factory {
   @SuppressWarnings("unused")
   private volatile long callsFinishedKnownReceived;
 
-  GrpclbClientLoadRecorder(TimeProvider time) {
+  GrpclbClientStreamTracerFactory(TimeProvider time) {
     this.time = checkNotNull(time, "time provider");
   }
 
   @Override
   public ClientStreamTracer newClientStreamTracer(
       ClientStreamTracer.StreamInfo info, Metadata headers) {
-    callsStartedUpdater.getAndIncrement(this);
-    return new StreamTracer();
+    Attributes transportAttrs = checkNotNull(info.getTransportAttrs(), "transportAttrs");
+    Attributes eagAttrs = checkNotNull(
+        transportAttrs.get(Grpc.TRANSPORT_ATTR_CLIENT_EAG_ATTRS), "eagAttrs");
+    String token = eagAttrs.get(GrpclbConstants.TOKEN_ATTRIBUTE_KEY);
+    headers.discardAll(GrpclbConstants.TOKEN_METADATA_KEY);
+    if (token != null) {
+      headers.put(GrpclbConstants.TOKEN_METADATA_KEY, token);
+      // Only picks with tokens are counted in load reports
+      callsStartedUpdater.getAndIncrement(this);
+      return new StreamTracer();
+    } else {
+      return NOOP_TRACER;
+    }
   }
 
   /**
@@ -146,12 +167,12 @@ final class GrpclbClientLoadRecorder extends ClientStreamTracer.Factory {
 
     @Override
     public void streamClosed(Status status) {
-      callsFinishedUpdater.getAndIncrement(GrpclbClientLoadRecorder.this);
+      callsFinishedUpdater.getAndIncrement(GrpclbClientStreamTracerFactory.this);
       if (!headersSent) {
-        callsFailedToSendUpdater.getAndIncrement(GrpclbClientLoadRecorder.this);
+        callsFailedToSendUpdater.getAndIncrement(GrpclbClientStreamTracerFactory.this);
       }
       if (anythingReceived) {
-        callsFinishedKnownReceivedUpdater.getAndIncrement(GrpclbClientLoadRecorder.this);
+        callsFinishedKnownReceivedUpdater.getAndIncrement(GrpclbClientStreamTracerFactory.this);
       }
     }
   }

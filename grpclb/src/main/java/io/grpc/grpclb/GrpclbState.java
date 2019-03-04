@@ -92,7 +92,7 @@ final class GrpclbState {
   @VisibleForTesting
   static final RoundRobinEntry BUFFER_ENTRY = new RoundRobinEntry() {
       @Override
-      public PickResult picked(Metadata headers) {
+      public PickResult getPickResult() {
         return PickResult.withNoResult();
       }
 
@@ -138,7 +138,7 @@ final class GrpclbState {
 
   @Nullable
   private LbStream lbStream;
-  private Map<EquivalentAddressGroup, Subchannel> subchannels = Collections.emptyMap();
+  private Set<Subchannel> subchannels = Collections.emptySet();
   private Mode mode;
 
   // Has the same size as the round-robin list from the balancer.
@@ -166,7 +166,7 @@ final class GrpclbState {
   }
 
   void handleSubchannelState(Subchannel subchannel, ConnectivityStateInfo newState) {
-    if (newState.getState() == SHUTDOWN || !subchannels.values().contains(subchannel)) {
+    if (newState.getState() == SHUTDOWN || !subchannels.contains(subchannel)) {
       return;
     }
     if (newState.getState() == IDLE) {
@@ -218,7 +218,7 @@ final class GrpclbState {
     if (usingFallbackBackends) {
       return;
     }
-    for (Subchannel subchannel : subchannels.values()) {
+    for (Subchannel subchannel : subchannels) {
       if (subchannel.getAttributes().get(STATE_INFO).get().getState() == READY) {
         return;
       }
@@ -234,12 +234,8 @@ final class GrpclbState {
     usingFallbackBackends = true;
     logger.log(ChannelLogLevel.INFO, "Using fallback backends");
 
-    List<DropEntry> newDropList = new ArrayList<>();
-    List<BackendAddressGroup> newBackendAddrList = new ArrayList<>();
-    for (EquivalentAddressGroup eag : fallbackBackendList) {
-      newDropList.add(null);
-      newBackendAddrList.add(new BackendAddressGroup(eag, null));
-    }
+    List<DropEntry> newDropList = Collections.nCopies(fallbackBackendList.size(), null);
+    List<EquivalentAddressGroup> newBackendAddrList = new ArrayList<>(fallbackBackendList);
     useRoundRobinLists(newDropList, newBackendAddrList, null);
   }
 
@@ -307,10 +303,10 @@ final class GrpclbState {
     shutdownLbComm();
     // We close the subchannels through subchannelPool instead of helper just for convenience of
     // testing.
-    for (Subchannel subchannel : subchannels.values()) {
+    for (Subchannel subchannel : subchannels) {
       subchannelPool.returnSubchannel(subchannel);
     }
-    subchannels = Collections.emptyMap();
+    subchannels = Collections.emptySet();
     subchannelPool.clear();
     cancelFallbackTimer();
     cancelLbRpcRetryTimer();
@@ -326,30 +322,28 @@ final class GrpclbState {
 
   @VisibleForTesting
   @Nullable
-  GrpclbClientLoadRecorder getLoadRecorder() {
+  GrpclbClientStreamTracerFactory getTracerFactory() {
     if (lbStream == null) {
       return null;
     }
-    return lbStream.loadRecorder;
+    return lbStream.tracerFactory;
   }
 
   /**
    * Populate the round-robin lists with the given values.
    */
   private void useRoundRobinLists(
-      List<DropEntry> newDropList, List<BackendAddressGroup> newBackendAddrList,
-      @Nullable GrpclbClientLoadRecorder loadRecorder) {
+      List<DropEntry> newDropList, List<EquivalentAddressGroup> newBackendAddrList,
+      @Nullable GrpclbClientStreamTracerFactory tracerFactory) {
     logger.log(
         ChannelLogLevel.INFO, "Using RR list={0}, drop={1}", newBackendAddrList, newDropList);
-    HashMap<EquivalentAddressGroup, Subchannel> newSubchannelMap =
-        new HashMap<>();
+    Set<Subchannel> newSubchannelSet = new HashSet<>();
     List<BackendEntry> newBackendList = new ArrayList<>();
 
-    for (BackendAddressGroup backendAddr : newBackendAddrList) {
-      EquivalentAddressGroup eag = backendAddr.getAddresses();
-      Subchannel subchannel = newSubchannelMap.get(eag);
+    for (EquivalentAddressGroup eag : newBackendAddrList) {
+      Subchannel subchannel = findSubchannelByAddresses(newSubchannelSet, eag.getAddresses());
       if (subchannel == null) {
-        subchannel = subchannels.get(eag);
+        subchannel = findSubchannelByAddresses(eag.getAddresses());
         if (subchannel == null) {
           Attributes subchannelAttrs = Attributes.newBuilder()
               .set(STATE_INFO,
@@ -361,13 +355,7 @@ final class GrpclbState {
         }
         newSubchannelMap.put(eag, subchannel);
       }
-      BackendEntry entry;
-      // Only picks with tokens are reported to LoadRecorder
-      if (backendAddr.getToken() == null) {
-        entry = new BackendEntry(subchannel);
-      } else {
-        entry = new BackendEntry(subchannel, loadRecorder, backendAddr.getToken());
-      }
+      BackendEntry entry = new BackendEntry(subchannel, tracerFactory);
       newBackendList.add(entry);
     }
 
@@ -382,6 +370,17 @@ final class GrpclbState {
     subchannels = Collections.unmodifiableMap(newSubchannelMap);
     dropList = Collections.unmodifiableList(newDropList);
     backendList = Collections.unmodifiableList(newBackendList);
+  }
+
+  @Nullable
+  private static Subchannel findSubchannelByAddresses(
+      Collection<Subchannel> subchannels, List<SocketAddress> addresses) {
+    for (Subchannel subchannel : subchannels) {
+      if (addresses.equals(subchannel.getAllAddresses())) {
+        return subchannel;
+      }
+    }
+    return null;
   }
 
   @VisibleForTesting
@@ -417,7 +416,7 @@ final class GrpclbState {
   }
 
   private class LbStream implements StreamObserver<LoadBalanceResponse> {
-    final GrpclbClientLoadRecorder loadRecorder;
+    final GrpclbClientStreamTracerFactory tracerFactory;
     final LoadBalancerGrpc.LoadBalancerStub stub;
     StreamObserver<LoadBalanceRequest> lbRequestWriter;
 
@@ -431,7 +430,7 @@ final class GrpclbState {
       this.stub = checkNotNull(stub, "stub");
       // Stats data only valid for current LbStream.  We do not carry over data from previous
       // stream.
-      loadRecorder = new GrpclbClientLoadRecorder(time);
+      tracerFactory = new GrpclbClientStreamTracerFactory(time);
     }
 
     void start() {
@@ -473,7 +472,7 @@ final class GrpclbState {
       if (closed) {
         return;
       }
-      ClientStats stats = loadRecorder.generateLoadReport();
+      ClientStats stats = tracerFactory.generateLoadReport();
       // TODO(zhangkun83): flow control?
       try {
         lbRequestWriter.onNext(LoadBalanceRequest.newBuilder().setClientStats(stats).build());
@@ -520,12 +519,12 @@ final class GrpclbState {
       // TODO(zhangkun83): handle delegate from initialResponse
       ServerList serverList = response.getServerList();
       List<DropEntry> newDropList = new ArrayList<>();
-      List<BackendAddressGroup> newBackendAddrList = new ArrayList<>();
+      List<EquivalentAddressGroup> newBackendAddrList = new ArrayList<>();
       // Construct the new collections. Create new Subchannels when necessary.
       for (Server server : serverList.getServersList()) {
         String token = server.getLoadBalanceToken();
         if (server.getDrop()) {
-          newDropList.add(new DropEntry(loadRecorder, token));
+          newDropList.add(new DropEntry(tracerFactory, token));
         } else {
           newDropList.add(null);
           InetSocketAddress address;
@@ -541,15 +540,18 @@ final class GrpclbState {
           }
           // ALTS code can use the presence of ATTR_LB_PROVIDED_BACKEND to select ALTS instead of
           // TLS, with Netty.
-          EquivalentAddressGroup eag =
-              new EquivalentAddressGroup(address, LB_PROVIDED_BACKEND_ATTRS);
-          newBackendAddrList.add(new BackendAddressGroup(eag, token));
+          Attributes eagAttrs = LB_PROVIDED_BACKEND_ATTRS;
+          if (token != null) {
+            eagAttrs = eagAttrs.toBuilder().set(GrpclbConstants.TOKEN_ATTRIBUTE_KEY, token).build();
+          }
+          EquivalentAddressGroup eag = new EquivalentAddressGroup(address, eagAttrs);
+          newBackendAddrList.add(eag);
         }
       }
       // Stop using fallback backends as soon as a new server list is received from the balancer.
       usingFallbackBackends = false;
       cancelFallbackTimer();
-      useRoundRobinLists(newDropList, newBackendAddrList, loadRecorder);
+      useRoundRobinLists(newDropList, newBackendAddrList, tracerFactory);
       maybeUpdatePicker();
     }
 
@@ -706,16 +708,16 @@ final class GrpclbState {
 
   @VisibleForTesting
   static final class DropEntry {
-    private final GrpclbClientLoadRecorder loadRecorder;
+    private final GrpclbClientStreamTracerFactory tracerFactory;
     private final String token;
 
-    DropEntry(GrpclbClientLoadRecorder loadRecorder, String token) {
-      this.loadRecorder = checkNotNull(loadRecorder, "loadRecorder");
+    DropEntry(GrpclbClientStreamTracerFactory tracerFactory, String token) {
+      this.tracerFactory = checkNotNull(tracerFactory, "tracerFactory");
       this.token = checkNotNull(token, "token");
     }
 
     PickResult picked() {
-      loadRecorder.recordDroppedRequest(token);
+      tracerFactory.recordDroppedRequest(token);
       return DROP_PICK_RESULT;
     }
 
@@ -727,7 +729,7 @@ final class GrpclbState {
 
     @Override
     public int hashCode() {
-      return Objects.hashCode(loadRecorder, token);
+      return Objects.hashCode(tracerFactory, token);
     }
 
     @Override
@@ -736,59 +738,40 @@ final class GrpclbState {
         return false;
       }
       DropEntry that = (DropEntry) other;
-      return Objects.equal(loadRecorder, that.loadRecorder) && Objects.equal(token, that.token);
+      return Objects.equal(tracerFactory, that.tracerFactory) && Objects.equal(token, that.token);
     }
   }
 
   private interface RoundRobinEntry {
-    PickResult picked(Metadata headers);
+    PickResult getPickResult();
   }
 
   @VisibleForTesting
   static final class BackendEntry implements RoundRobinEntry {
     @VisibleForTesting
     final PickResult result;
-    @Nullable
-    private final GrpclbClientLoadRecorder loadRecorder;
-    @Nullable
-    private final String token;
 
     /**
      * Creates a BackendEntry whose usage will be reported to load recorder.
      */
-    BackendEntry(Subchannel subchannel, GrpclbClientLoadRecorder loadRecorder, String token) {
-      this.result = PickResult.withSubchannel(subchannel, loadRecorder);
-      this.loadRecorder = checkNotNull(loadRecorder, "loadRecorder");
-      this.token = checkNotNull(token, "token");
-    }
-
-    /**
-     * Creates a BackendEntry whose usage will not be reported.
-     */
-    BackendEntry(Subchannel subchannel) {
-      this.result = PickResult.withSubchannel(subchannel);
-      this.loadRecorder = null;
-      this.token = null;
+    BackendEntry(Subchannel subchannel, @Nullable GrpclbClientStreamTracerFactory tracerFactory) {
+      this.result = PickResult.withSubchannel(subchannel, tracerFactory);
     }
 
     @Override
-    public PickResult picked(Metadata headers) {
-      headers.discardAll(GrpclbConstants.TOKEN_METADATA_KEY);
-      if (token != null) {
-        headers.put(GrpclbConstants.TOKEN_METADATA_KEY, token);
-      }
+    public PickResult getPickResult() {
       return result;
     }
 
     @Override
     public String toString() {
       // This is printed in logs.  Only give out useful information.
-      return "[" + result.getSubchannel().getAllAddresses().toString() + "(" + token + ")]";
+      return result.getSubchannel().getAllAddresses().toString();
     }
 
     @Override
     public int hashCode() {
-      return Objects.hashCode(loadRecorder, result, token);
+      return result.hashCode();
     }
 
     @Override
@@ -797,8 +780,7 @@ final class GrpclbState {
         return false;
       }
       BackendEntry that = (BackendEntry) other;
-      return Objects.equal(result, that.result) && Objects.equal(token, that.token)
-          && Objects.equal(loadRecorder, that.loadRecorder);
+      return Objects.equal(result, that.result);
     }
   }
 
@@ -811,7 +793,7 @@ final class GrpclbState {
     }
 
     @Override
-    public PickResult picked(Metadata headers) {
+    public PickResult getPickResult() {
       return result;
     }
 
@@ -878,7 +860,7 @@ final class GrpclbState {
         if (pickIndex == pickList.size()) {
           pickIndex = 0;
         }
-        return pick.picked(args.getHeaders());
+        return pick.getPickResult();
       }
     }
   }

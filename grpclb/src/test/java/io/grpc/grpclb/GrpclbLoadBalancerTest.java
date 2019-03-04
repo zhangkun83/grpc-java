@@ -42,6 +42,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.verifyZeroInteractions;
 import static org.mockito.Mockito.when;
 
 import com.google.common.collect.Iterables;
@@ -138,8 +139,6 @@ public class GrpclbLoadBalancerTest {
           return command.toString().contains(GrpclbState.LbRpcRetryTask.class.getSimpleName());
         }
       };
-  private static final Attributes LB_BACKEND_ATTRS =
-      Attributes.newBuilder().set(GrpcAttributes.ATTR_LB_PROVIDED_BACKEND, true).build();
 
   @Mock
   private Helper helper;
@@ -313,97 +312,61 @@ public class GrpclbLoadBalancerTest {
 
   @Test
   public void roundRobinPickerNoDrop() {
-    GrpclbClientLoadRecorder loadRecorder =
-        new GrpclbClientLoadRecorder(fakeClock.getTimeProvider());
+    GrpclbClientStreamTracerFactory tracerFactory =
+        new GrpclbClientStreamTracerFactory(fakeClock.getTimeProvider());
     Subchannel subchannel = mock(Subchannel.class);
-    BackendEntry b1 = new BackendEntry(subchannel, loadRecorder, "LBTOKEN0001");
-    BackendEntry b2 = new BackendEntry(subchannel, loadRecorder, "LBTOKEN0002");
+    BackendEntry b1 = new BackendEntry(subchannel, tracerFactory);
+    BackendEntry b2 = new BackendEntry(subchannel, tracerFactory);
 
     List<BackendEntry> pickList = Arrays.asList(b1, b2);
     RoundRobinPicker picker = new RoundRobinPicker(Collections.<DropEntry>emptyList(), pickList);
 
-    PickSubchannelArgs args1 = mock(PickSubchannelArgs.class);
-    Metadata headers1 = new Metadata();
-    // The existing token on the headers will be replaced
-    headers1.put(GrpclbConstants.TOKEN_METADATA_KEY, "LBTOKEN__OLD");
-    when(args1.getHeaders()).thenReturn(headers1);
-    assertSame(b1.result, picker.pickSubchannel(args1));
-    verify(args1).getHeaders();
-    assertThat(headers1.getAll(GrpclbConstants.TOKEN_METADATA_KEY)).containsExactly("LBTOKEN0001");
+    PickSubchannelArgs args = mock(PickSubchannelArgs.class);
 
-    PickSubchannelArgs args2 = mock(PickSubchannelArgs.class);
-    Metadata headers2 = new Metadata();
-    when(args2.getHeaders()).thenReturn(headers2);
-    assertSame(b2.result, picker.pickSubchannel(args2));
-    verify(args2).getHeaders();
-    assertThat(headers2.getAll(GrpclbConstants.TOKEN_METADATA_KEY)).containsExactly("LBTOKEN0002");
-
-    PickSubchannelArgs args3 = mock(PickSubchannelArgs.class);
-    Metadata headers3 = new Metadata();
-    when(args3.getHeaders()).thenReturn(headers3);
-    assertSame(b1.result, picker.pickSubchannel(args3));
-    verify(args3).getHeaders();
-    assertThat(headers3.getAll(GrpclbConstants.TOKEN_METADATA_KEY)).containsExactly("LBTOKEN0001");
+    assertSame(b1.result, picker.pickSubchannel(args));
+    assertSame(b2.result, picker.pickSubchannel(args));
+    assertSame(b1.result, picker.pickSubchannel(args));
 
     verify(subchannel, never()).getAttributes();
+    verifyZeroInteractions(args);
   }
+
+  // TODO(zhangkun83): test token sending
 
 
   @Test
   public void roundRobinPickerWithDrop() {
     assertTrue(DROP_PICK_RESULT.isDrop());
-    GrpclbClientLoadRecorder loadRecorder =
-        new GrpclbClientLoadRecorder(fakeClock.getTimeProvider());
+    GrpclbClientStreamTracerFactory tracerFactory =
+        new GrpclbClientStreamTracerFactory(fakeClock.getTimeProvider());
     Subchannel subchannel = mock(Subchannel.class);
     // 1 out of 2 requests are to be dropped
-    DropEntry d = new DropEntry(loadRecorder, "LBTOKEN0003");
+    DropEntry d = new DropEntry(tracerFactory, "LBTOKEN0003");
     List<DropEntry> dropList = Arrays.asList(null, d);
 
-    BackendEntry b1 = new BackendEntry(subchannel, loadRecorder, "LBTOKEN0001");
-    BackendEntry b2 = new BackendEntry(subchannel, loadRecorder, "LBTOKEN0002");
+    BackendEntry b1 = new BackendEntry(subchannel, tracerFactory);
+    BackendEntry b2 = new BackendEntry(subchannel, tracerFactory);
     List<BackendEntry> pickList = Arrays.asList(b1, b2);
     RoundRobinPicker picker = new RoundRobinPicker(dropList, pickList);
+    PickSubchannelArgs args = mock(PickSubchannelArgs.class);
 
     // dropList[0], pickList[0]
-    PickSubchannelArgs args1 = mock(PickSubchannelArgs.class);
-    Metadata headers1 = new Metadata();
-    headers1.put(GrpclbConstants.TOKEN_METADATA_KEY, "LBTOKEN__OLD");
-    when(args1.getHeaders()).thenReturn(headers1);
-    assertSame(b1.result, picker.pickSubchannel(args1));
-    verify(args1).getHeaders();
-    assertThat(headers1.getAll(GrpclbConstants.TOKEN_METADATA_KEY)).containsExactly("LBTOKEN0001");
+    assertSame(b1.result, picker.pickSubchannel(args));
 
     // dropList[1]: drop
-    PickSubchannelArgs args2 = mock(PickSubchannelArgs.class);
-    Metadata headers2 = new Metadata();
-    when(args2.getHeaders()).thenReturn(headers2);
-    assertSame(DROP_PICK_RESULT, picker.pickSubchannel(args2));
-    verify(args2, never()).getHeaders();
+    assertSame(DROP_PICK_RESULT, picker.pickSubchannel(args));
 
     // dropList[0], pickList[1]
-    PickSubchannelArgs args3 = mock(PickSubchannelArgs.class);
-    Metadata headers3 = new Metadata();
-    when(args3.getHeaders()).thenReturn(headers3);
-    assertSame(b2.result, picker.pickSubchannel(args3));
-    verify(args3).getHeaders();
-    assertThat(headers3.getAll(GrpclbConstants.TOKEN_METADATA_KEY)).containsExactly("LBTOKEN0002");
+    assertSame(b2.result, picker.pickSubchannel(args));
 
     // dropList[1]: drop
-    PickSubchannelArgs args4 = mock(PickSubchannelArgs.class);
-    Metadata headers4 = new Metadata();
-    when(args4.getHeaders()).thenReturn(headers4);
-    assertSame(DROP_PICK_RESULT, picker.pickSubchannel(args4));
-    verify(args4, never()).getHeaders();
+    assertSame(DROP_PICK_RESULT, picker.pickSubchannel(args));
 
     // dropList[0], pickList[0]
-    PickSubchannelArgs args5 = mock(PickSubchannelArgs.class);
-    Metadata headers5 = new Metadata();
-    when(args5.getHeaders()).thenReturn(headers5);
-    assertSame(b1.result, picker.pickSubchannel(args5));
-    verify(args5).getHeaders();
-    assertThat(headers5.getAll(GrpclbConstants.TOKEN_METADATA_KEY)).containsExactly("LBTOKEN0001");
+    assertSame(b1.result, picker.pickSubchannel(args));
 
     verify(subchannel, never()).getAttributes();
+    verifyZeroInteractions(args);
   }
 
   @Test
@@ -462,12 +425,12 @@ public class GrpclbLoadBalancerTest {
     RoundRobinPicker picker = (RoundRobinPicker) pickerCaptor.getValue();
     assertThat(picker.dropList).containsExactly(
         null,
-        new DropEntry(getLoadRecorder(), "token0001"),
+        new DropEntry(getTracerFactory(), "token0001"),
         null,
-        new DropEntry(getLoadRecorder(), "token0003")).inOrder();
+        new DropEntry(getTracerFactory(), "token0003")).inOrder();
     assertThat(picker.pickList).containsExactly(
-        new BackendEntry(subchannel1, getLoadRecorder(), "token0001"),
-        new BackendEntry(subchannel2, getLoadRecorder(), "token0002")).inOrder();
+        new BackendEntry(subchannel1, getTracerFactory()),
+        new BackendEntry(subchannel2, getTracerFactory())).inOrder();
 
     // Report, no data
     assertNextReport(
@@ -476,7 +439,7 @@ public class GrpclbLoadBalancerTest {
 
     PickResult pick1 = picker.pickSubchannel(args);
     assertSame(subchannel1, pick1.getSubchannel());
-    assertSame(getLoadRecorder(), pick1.getStreamTracerFactory());
+    assertSame(getTracerFactory(), pick1.getStreamTracerFactory());
 
     // Merely the pick will not be recorded as upstart.
     assertNextReport(
@@ -505,7 +468,7 @@ public class GrpclbLoadBalancerTest {
 
     PickResult pick3 = picker.pickSubchannel(args);
     assertSame(subchannel2, pick3.getSubchannel());
-    assertSame(getLoadRecorder(), pick3.getStreamTracerFactory());
+    assertSame(getTracerFactory(), pick3.getStreamTracerFactory());
     ClientStreamTracer tracer3 =
         pick3.getStreamTracerFactory().newClientStreamTracer(STREAM_INFO, new Metadata());
 
@@ -542,7 +505,7 @@ public class GrpclbLoadBalancerTest {
 
     PickResult pick5 = picker.pickSubchannel(args);
     assertSame(subchannel1, pick1.getSubchannel());
-    assertSame(getLoadRecorder(), pick5.getStreamTracerFactory());
+    assertSame(getTracerFactory(), pick5.getStreamTracerFactory());
     ClientStreamTracer tracer5 =
         pick5.getStreamTracerFactory().newClientStreamTracer(STREAM_INFO, new Metadata());
 
@@ -611,14 +574,14 @@ public class GrpclbLoadBalancerTest {
     // Same backends, thus no new subchannels
     helperInOrder.verify(subchannelPool, never()).takeOrCreateSubchannel(
         any(EquivalentAddressGroup.class), any(Attributes.class));
-    // But the new RoundRobinEntries have a new loadRecorder, thus considered different from
+    // But the new RoundRobinEntries have a new tracerFactory, thus considered different from
     // the previous list, thus a new picker is created
     helperInOrder.verify(helper).updateBalancingState(eq(READY), pickerCaptor.capture());
     picker = (RoundRobinPicker) pickerCaptor.getValue();
 
     PickResult pick1p = picker.pickSubchannel(args);
     assertSame(subchannel1, pick1p.getSubchannel());
-    assertSame(getLoadRecorder(), pick1p.getStreamTracerFactory());
+    assertSame(getTracerFactory(), pick1p.getStreamTracerFactory());
     pick1p.getStreamTracerFactory().newClientStreamTracer(STREAM_INFO, new Metadata());
 
     // The pick from the new stream will be included in the report
@@ -790,10 +753,10 @@ public class GrpclbLoadBalancerTest {
     lbResponseObserver.onNext(buildLbResponse(backends));
 
     inOrder.verify(subchannelPool).takeOrCreateSubchannel(
-        eq(new EquivalentAddressGroup(backends.get(0).addr, LB_BACKEND_ATTRS)),
+        eq(new EquivalentAddressGroup(backends.get(0).addr, lbProvidedBackendEagAttrs("TOKEN1"))),
         any(Attributes.class));
     inOrder.verify(subchannelPool).takeOrCreateSubchannel(
-        eq(new EquivalentAddressGroup(backends.get(1).addr, LB_BACKEND_ATTRS)),
+        eq(new EquivalentAddressGroup(backends.get(1).addr, lbProvidedBackendEagAttrs("TOKEN2"))),
         any(Attributes.class));
   }
 
@@ -876,10 +839,12 @@ public class GrpclbLoadBalancerTest {
     lbResponseObserver.onNext(buildLbResponse(backends1));
 
     inOrder.verify(subchannelPool).takeOrCreateSubchannel(
-        eq(new EquivalentAddressGroup(backends1.get(0).addr, LB_BACKEND_ATTRS)),
+        eq(new EquivalentAddressGroup(backends1.get(0).addr,
+                lbProvidedBackendEagAttrs("token0001"))),
         any(Attributes.class));
     inOrder.verify(subchannelPool).takeOrCreateSubchannel(
-        eq(new EquivalentAddressGroup(backends1.get(1).addr, LB_BACKEND_ATTRS)),
+        eq(new EquivalentAddressGroup(backends1.get(1).addr,
+                lbProvidedBackendEagAttrs("token0002"))),
         any(Attributes.class));
     assertEquals(2, mockSubchannels.size());
     Subchannel subchannel1 = mockSubchannels.poll();
@@ -887,10 +852,10 @@ public class GrpclbLoadBalancerTest {
     verify(subchannel1).requestConnection();
     verify(subchannel2).requestConnection();
     assertEquals(
-        new EquivalentAddressGroup(backends1.get(0).addr, LB_BACKEND_ATTRS),
+        new EquivalentAddressGroup(backends1.get(0).addr, lbProvidedBackendEagAttrs("token0001")),
         subchannel1.getAddresses());
     assertEquals(
-        new EquivalentAddressGroup(backends1.get(1).addr, LB_BACKEND_ATTRS),
+        new EquivalentAddressGroup(backends1.get(1).addr, lbProvidedBackendEagAttrs("token0002")),
         subchannel2.getAddresses());
 
     deliverSubchannelState(subchannel1, ConnectivityStateInfo.forNonError(CONNECTING));
@@ -905,8 +870,8 @@ public class GrpclbLoadBalancerTest {
     assertThat(logs).containsExactly(
         "DEBUG: Got an LB response: " + buildLbResponse(backends1),
         "INFO: Using RR list="
-            + "[[[/127.0.0.1:2000]/{io.grpc.grpclb.lbProvidedBackend=true}](token0001),"
-            + " [[/127.0.0.1:2010]/{io.grpc.grpclb.lbProvidedBackend=true}](token0002)],"
+            + "[[[/127.0.0.1:2000]/{io.grpc.grpclb.lbProvidedBackend=true, lb-token=token0001}],"
+            + " [[/127.0.0.1:2010]/{io.grpc.grpclb.lbProvidedBackend=true, lb-token=token0002}]],"
             + " drop=[null, null]",
         "INFO: CONNECTING: picks=[BUFFER_ENTRY], drops=[null, null]").inOrder();
     logs.clear();
@@ -916,30 +881,29 @@ public class GrpclbLoadBalancerTest {
     inOrder.verify(helper).updateBalancingState(eq(READY), pickerCaptor.capture());
     assertThat(logs).containsExactly(
         "INFO: READY: picks="
-            + "[[[[[/127.0.0.1:2010]/{io.grpc.grpclb.lbProvidedBackend=true}]](token0002)]],"
+            + "[[[[/127.0.0.1:2010]/{io.grpc.grpclb.lbProvidedBackend=true, lb-token=token0002}]]],"
             + " drops=[null, null]");
     logs.clear();
 
     RoundRobinPicker picker1 = (RoundRobinPicker) pickerCaptor.getValue();
 
     assertThat(picker1.dropList).containsExactly(null, null);
-    assertThat(picker1.pickList).containsExactly(
-        new BackendEntry(subchannel2, getLoadRecorder(), "token0002"));
+    assertThat(picker1.pickList).containsExactly(new BackendEntry(subchannel2, getTracerFactory()));
 
     deliverSubchannelState(subchannel1, ConnectivityStateInfo.forNonError(READY));
     inOrder.verify(helper).updateBalancingState(eq(READY), pickerCaptor.capture());
     assertThat(logs).containsExactly(
         "INFO: READY: picks="
-            + "[[[[[/127.0.0.1:2000]/{io.grpc.grpclb.lbProvidedBackend=true}]](token0001)],"
-            + " [[[[/127.0.0.1:2010]/{io.grpc.grpclb.lbProvidedBackend=true}]](token0002)]],"
+            + "[[[[/127.0.0.1:2000]/{io.grpc.grpclb.lbProvidedBackend=true, lb-token=token0001}]],"
+            + " [[[/127.0.0.1:2010]/{io.grpc.grpclb.lbProvidedBackend=true, lb-token=token0002}]]],"
             + " drops=[null, null]");
     logs.clear();
 
     RoundRobinPicker picker2 = (RoundRobinPicker) pickerCaptor.getValue();
     assertThat(picker2.dropList).containsExactly(null, null);
     assertThat(picker2.pickList).containsExactly(
-        new BackendEntry(subchannel1, getLoadRecorder(), "token0001"),
-        new BackendEntry(subchannel2, getLoadRecorder(), "token0002"))
+        new BackendEntry(subchannel1, getTracerFactory()),
+        new BackendEntry(subchannel2, getTracerFactory()))
         .inOrder();
 
     // Disconnected subchannels
@@ -949,14 +913,14 @@ public class GrpclbLoadBalancerTest {
     inOrder.verify(helper).updateBalancingState(eq(READY), pickerCaptor.capture());
     assertThat(logs).containsExactly(
         "INFO: READY: picks="
-            + "[[[[[/127.0.0.1:2010]/{io.grpc.grpclb.lbProvidedBackend=true}]](token0002)]],"
+            + "[[[[/127.0.0.1:2010]/{io.grpc.grpclb.lbProvidedBackend=true, lb-token=token0002}]]],"
             + " drops=[null, null]");
     logs.clear();
 
     RoundRobinPicker picker3 = (RoundRobinPicker) pickerCaptor.getValue();
     assertThat(picker3.dropList).containsExactly(null, null);
     assertThat(picker3.pickList).containsExactly(
-        new BackendEntry(subchannel2, getLoadRecorder(), "token0002"));
+        new BackendEntry(subchannel2, getTracerFactory()));
 
     deliverSubchannelState(subchannel1, ConnectivityStateInfo.forNonError(CONNECTING));
     inOrder.verifyNoMoreInteractions();
@@ -993,9 +957,9 @@ public class GrpclbLoadBalancerTest {
     assertThat(logs).containsExactly(
         "DEBUG: Got an LB response: " + buildLbResponse(backends2),
         "INFO: Using RR list="
-            + "[[[/127.0.0.1:2030]/{io.grpc.grpclb.lbProvidedBackend=true}](token0003),"
-            + " [[/127.0.0.1:2010]/{io.grpc.grpclb.lbProvidedBackend=true}](token0004),"
-            + " [[/127.0.0.1:2030]/{io.grpc.grpclb.lbProvidedBackend=true}](token0005)],"
+            + "[[[/127.0.0.1:2030]/{io.grpc.grpclb.lbProvidedBackend=true, lb-token=token0003}],"
+            + " [[/127.0.0.1:2010]/{io.grpc.grpclb.lbProvidedBackend=true, lb-token=token0004}],"
+            + " [[/127.0.0.1:2030]/{io.grpc.grpclb.lbProvidedBackend=true, lb-token=token0005}]],"
             + " drop=[null, drop(token0003), null, null, drop(token0006)]",
         "INFO: CONNECTING: picks=[BUFFER_ENTRY],"
             + " drops=[null, drop(token0003), null, null, drop(token0006)]")
@@ -1008,25 +972,27 @@ public class GrpclbLoadBalancerTest {
     verify(subchannelPool, never()).returnSubchannel(same(subchannel2));
 
     inOrder.verify(subchannelPool, never()).takeOrCreateSubchannel(
-        eq(new EquivalentAddressGroup(backends2.get(2).addr, LB_BACKEND_ATTRS)),
+        eq(new EquivalentAddressGroup(backends2.get(2).addr,
+                lbProvidedBackendEagAttrs("token0004"))),
         any(Attributes.class));
     inOrder.verify(subchannelPool).takeOrCreateSubchannel(
-        eq(new EquivalentAddressGroup(backends2.get(0).addr, LB_BACKEND_ATTRS)),
+        eq(new EquivalentAddressGroup(backends2.get(0).addr,
+                lbProvidedBackendEagAttrs("token0003"))),
         any(Attributes.class));
     assertEquals(1, mockSubchannels.size());
     Subchannel subchannel3 = mockSubchannels.poll();
     verify(subchannel3).requestConnection();
     assertEquals(
-        new EquivalentAddressGroup(backends2.get(0).addr, LB_BACKEND_ATTRS),
+        new EquivalentAddressGroup(backends2.get(0).addr, lbProvidedBackendEagAttrs("token0003")),
         subchannel3.getAddresses());
     inOrder.verify(helper).updateBalancingState(eq(CONNECTING), pickerCaptor.capture());
     RoundRobinPicker picker7 = (RoundRobinPicker) pickerCaptor.getValue();
     assertThat(picker7.dropList).containsExactly(
         null,
-        new DropEntry(getLoadRecorder(), "token0003"),
+        new DropEntry(getTracerFactory(), "token0003"),
         null,
         null,
-        new DropEntry(getLoadRecorder(), "token0006")).inOrder();
+        new DropEntry(getTracerFactory(), "token0006")).inOrder();
     assertThat(picker7.pickList).containsExactly(BUFFER_ENTRY);
 
     // State updates on obsolete subchannel1 will have no effect
@@ -1041,28 +1007,28 @@ public class GrpclbLoadBalancerTest {
     RoundRobinPicker picker8 = (RoundRobinPicker) pickerCaptor.getValue();
     assertThat(picker8.dropList).containsExactly(
         null,
-        new DropEntry(getLoadRecorder(), "token0003"),
+        new DropEntry(getTracerFactory(), "token0003"),
         null,
         null,
-        new DropEntry(getLoadRecorder(), "token0006")).inOrder();
+        new DropEntry(getTracerFactory(), "token0006")).inOrder();
     // subchannel2 is still IDLE, thus not in the active list
     assertThat(picker8.pickList).containsExactly(
-        new BackendEntry(subchannel3, getLoadRecorder(), "token0003"),
-        new BackendEntry(subchannel3, getLoadRecorder(), "token0005")).inOrder();
+        new BackendEntry(subchannel3, getTracerFactory()),
+        new BackendEntry(subchannel3, getTracerFactory())).inOrder();
     // subchannel2 becomes READY and makes it into the list
     deliverSubchannelState(subchannel2, ConnectivityStateInfo.forNonError(READY));
     inOrder.verify(helper).updateBalancingState(eq(READY), pickerCaptor.capture());
     RoundRobinPicker picker9 = (RoundRobinPicker) pickerCaptor.getValue();
     assertThat(picker9.dropList).containsExactly(
         null,
-        new DropEntry(getLoadRecorder(), "token0003"),
+        new DropEntry(getTracerFactory(), "token0003"),
         null,
         null,
-        new DropEntry(getLoadRecorder(), "token0006")).inOrder();
+        new DropEntry(getTracerFactory(), "token0006")).inOrder();
     assertThat(picker9.pickList).containsExactly(
-        new BackendEntry(subchannel3, getLoadRecorder(), "token0003"),
-        new BackendEntry(subchannel2, getLoadRecorder(), "token0004"),
-        new BackendEntry(subchannel3, getLoadRecorder(), "token0005")).inOrder();
+        new BackendEntry(subchannel3, getTracerFactory()),
+        new BackendEntry(subchannel2, getTracerFactory()),
+        new BackendEntry(subchannel3, getTracerFactory())).inOrder();
     verify(subchannelPool, never()).returnSubchannel(same(subchannel3));
 
     // Update backends, with no entry
@@ -1398,26 +1364,20 @@ public class GrpclbLoadBalancerTest {
 
   private List<Subchannel> fallbackTestVerifyUseOfFallbackBackendLists(
       InOrder inOrder, List<EquivalentAddressGroup> addrs) {
-    return fallbackTestVerifyUseOfBackendLists(inOrder, addrs, null);
+    return fallbackTestVerifyUseOfBackendLists(inOrder, addrs);
   }
 
   private List<Subchannel> fallbackTestVerifyUseOfBalancerBackendLists(
       InOrder inOrder, List<ServerEntry> servers) {
     ArrayList<EquivalentAddressGroup> addrs = new ArrayList<>();
-    ArrayList<String> tokens = new ArrayList<>();
     for (ServerEntry server : servers) {
-      addrs.add(new EquivalentAddressGroup(server.addr, LB_BACKEND_ATTRS));
-      tokens.add(server.token);
+      addrs.add(new EquivalentAddressGroup(server.addr, lbProvidedBackendEagAttrs(server.token)));
     }
-    return fallbackTestVerifyUseOfBackendLists(inOrder, addrs, tokens);
+    return fallbackTestVerifyUseOfBackendLists(inOrder, addrs);
   }
 
   private List<Subchannel> fallbackTestVerifyUseOfBackendLists(
-      InOrder inOrder, List<EquivalentAddressGroup> addrs,
-      @Nullable List<String> tokens) {
-    if (tokens != null) {
-      assertEquals(addrs.size(), tokens.size());
-    }
+      InOrder inOrder, List<EquivalentAddressGroup> addrs) {
     for (EquivalentAddressGroup addr : addrs) {
       inOrder.verify(subchannelPool).takeOrCreateSubchannel(eq(addr), any(Attributes.class));
     }
@@ -1438,12 +1398,7 @@ public class GrpclbLoadBalancerTest {
     ArrayList<BackendEntry> pickList = new ArrayList<>();
     for (int i = 0; i < addrs.size(); i++) {
       Subchannel subchannel = subchannels.get(i);
-      BackendEntry backend;
-      if (tokens == null) {
-        backend = new BackendEntry(subchannel);
-      } else {
-        backend = new BackendEntry(subchannel, getLoadRecorder(), tokens.get(i));
-      }
+      BackendEntry backend = new BackendEntry(subchannel, getTracerFactory());
       pickList.add(backend);
       deliverSubchannelState(subchannel, ConnectivityStateInfo.forNonError(READY));
       inOrder.verify(helper).updateBalancingState(eq(READY), pickerCaptor.capture());
@@ -1682,8 +1637,8 @@ public class GrpclbLoadBalancerTest {
       });
   }
 
-  private GrpclbClientLoadRecorder getLoadRecorder() {
-    return balancer.getGrpclbState().getLoadRecorder();
+  private GrpclbClientStreamTracerFactory getTracerFactory() {
+    return balancer.getGrpclbState().getTracerFactory();
   }
 
   private static List<EquivalentAddressGroup> createResolvedServerAddresses(boolean ... isLb) {
@@ -1746,6 +1701,13 @@ public class GrpclbLoadBalancerTest {
   @SuppressWarnings("unchecked")
   private static Map<String, Object> parseJsonObject(String json) throws Exception {
     return (Map<String, Object>) JsonParser.parse(json);
+  }
+
+  private static Attributes lbProvidedBackendEagAttrs(String token) {
+    return Attributes.newBuilder()
+        .set(GrpcAttributes.ATTR_LB_PROVIDED_BACKEND, true)
+        .set(GrpclbConstants.TOKEN_ATTRIBUTE_KEY, token)
+        .build();
   }
 
   private static class ServerEntry {

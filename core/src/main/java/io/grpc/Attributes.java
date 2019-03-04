@@ -20,10 +20,12 @@ import static com.google.common.base.Preconditions.checkNotNull;
 
 import com.google.common.base.Objects;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
+import java.util.TreeMap;
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.Immutable;
 
@@ -46,6 +48,13 @@ import javax.annotation.concurrent.Immutable;
 @ExperimentalApi("https://github.com/grpc/grpc-java/issues/1764")
 @Immutable
 public final class Attributes {
+
+  private static final Comparator<Key<?>> toStringKeyComparator = new Comparator<Key<?>>() {
+      @Override
+      public int compare(Key<?> k1, Key<?> k2) {
+        return k1.debugString.compareTo(k2.debugString);
+      }
+    };
 
   private final Map<Key<?>, Object> data;
 
@@ -152,7 +161,10 @@ public final class Attributes {
 
   @Override
   public String toString() {
-    return data.toString();
+    // Produce deterministic order which is desirable in tests.
+    TreeMap<Key<?>, Object> treeMap = new TreeMap<>(toStringKeyComparator);
+    treeMap.putAll(data);
+    return treeMap.toString();
   }
 
   /**
