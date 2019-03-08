@@ -174,10 +174,7 @@ final class ManagedChannelImpl extends ManagedChannel implements
   @Nullable private final String userAgent;
 
   // Only null after channel is terminated. Must be assigned from the syncContext.
-  private NameResolver nameResolver;
-
-  // Must be accessed from the syncContext.
-  private boolean nameResolverStarted;
+  private TargetResolver resolver;
 
   // null when channel is in idle mode.  Must be assigned from syncContext.
   @Nullable
@@ -627,51 +624,6 @@ final class ManagedChannelImpl extends ManagedChannel implements
     channelCallTracer = callTracerFactory.create();
     this.channelz = checkNotNull(builder.channelz);
     channelz.addRootChannel(this);
-  }
-
-  @VisibleForTesting
-  static NameResolver getNameResolver(String target, NameResolver.Factory nameResolverFactory,
-      NameResolver.Helper nameResolverHelper) {
-    // Finding a NameResolver. Try using the target string as the URI. If that fails, try prepending
-    // "dns:///".
-    URI targetUri = null;
-    StringBuilder uriSyntaxErrors = new StringBuilder();
-    try {
-      targetUri = new URI(target);
-      // For "localhost:8080" this would likely cause newNameResolver to return null, because
-      // "localhost" is parsed as the scheme. Will fall into the next branch and try
-      // "dns:///localhost:8080".
-    } catch (URISyntaxException e) {
-      // Can happen with ip addresses like "[::1]:1234" or 127.0.0.1:1234.
-      uriSyntaxErrors.append(e.getMessage());
-    }
-    if (targetUri != null) {
-      NameResolver resolver = nameResolverFactory.newNameResolver(targetUri, nameResolverHelper);
-      if (resolver != null) {
-        return resolver;
-      }
-      // "foo.googleapis.com:8080" cause resolver to be null, because "foo.googleapis.com" is an
-      // unmapped scheme. Just fall through and will try "dns:///foo.googleapis.com:8080"
-    }
-
-    // If we reached here, the targetUri couldn't be used.
-    if (!URI_PATTERN.matcher(target).matches()) {
-      // It doesn't look like a URI target. Maybe it's an authority string. Try with the default
-      // scheme from the factory.
-      try {
-        targetUri = new URI(nameResolverFactory.getDefaultScheme(), "", "/" + target, null);
-      } catch (URISyntaxException e) {
-        // Should not be possible.
-        throw new IllegalArgumentException(e);
-      }
-      NameResolver resolver = nameResolverFactory.newNameResolver(targetUri, nameResolverHelper);
-      if (resolver != null) {
-        return resolver;
-      }
-    }
-    throw new IllegalArgumentException(String.format(
-        "cannot find a NameResolver for %s%s",
-        target, uriSyntaxErrors.length() > 0 ? " (" + uriSyntaxErrors + ")" : ""));
   }
 
   /**
@@ -1322,12 +1274,7 @@ final class ManagedChannelImpl extends ManagedChannel implements
             }
           }
 
-          if (servers.isEmpty() && !helper.lb.canHandleEmptyAddressListFromNameResolution()) {
-            onError(Status.UNAVAILABLE.withDescription(
-                    "Name resolver " + resolver + " returned an empty list"));
-          } else {
-            helper.lb.handleResolvedAddressGroups(servers, config);
-          }
+          helper.lb.handleResolvedAddressGroups(servers, config);
         }
       }
 
